@@ -76,6 +76,8 @@ jobs:
       
           # Relative URLs in Qt Creator's .gitmodules resolve against the fork.
           # Replace them with their actual absolute upstream URLs.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          
           git config -f .gitmodules \
             submodule.perfparser.url \
             https://github.com/qt-creator/perfparser.git
