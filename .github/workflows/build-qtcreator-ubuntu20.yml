@@ -123,6 +123,28 @@ jobs:
           "$CC" --version
           test -f "$CONDA_PREFIX/lib/cmake/Qt6/Qt6Config.cmake"
 
+      - name: Patch bundled libarchive for Ubuntu 20.04
+        shell: micromamba-shell {0}
+        run: |
+          set -euxo pipefail
+      
+          CONFIG_FILE="$GITHUB_WORKSPACE/src/libs/3rdparty/libarchive/config_unix.h"
+          test -f "$CONFIG_FILE"
+      
+          # Qt Creator's generated config assumes glibc 2.34 APIs.
+          # Disable them so libarchive uses its portable sysconf/close fallback.
+          sed -i \
+            -e 's/^#define HAVE_CLOSEFROM 1$/#define HAVE_CLOSEFROM 0/' \
+            -e 's/^#define HAVE_CLOSE_RANGE 1$/#define HAVE_CLOSE_RANGE 0/' \
+            "$CONFIG_FILE"
+      
+          echo "Patched libarchive configuration:"
+          grep -E '^#define HAVE_CLOSE(FROM|_RANGE) ' "$CONFIG_FILE"
+      
+          # Fail immediately if the expected source format changed.
+          grep -q '^#define HAVE_CLOSEFROM 0$' "$CONFIG_FILE"
+          grep -q '^#define HAVE_CLOSE_RANGE 0$' "$CONFIG_FILE"
+
       # Qt Creator recommends its prebuilt patched LLVM/Clang package.
       # The RHEL 8 build has an older glibc baseline than Ubuntu 20.04.
       - name: Download LLVM and Clang
