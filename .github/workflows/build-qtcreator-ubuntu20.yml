@@ -65,11 +65,27 @@ jobs:
       - name: Check out Qt Creator source
         uses: actions/checkout@v4
         with:
-          # Manual run: build the tag/branch entered in the Actions page.
-          # Push run: build the branch that received the push.
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.ref_name }}
           fetch-depth: 0
-          submodules: recursive
+          submodules: false
+      
+      - name: Fix and fetch submodules
+        shell: bash
+        run: |
+          set -euxo pipefail
+      
+          # Relative URLs in Qt Creator's .gitmodules resolve against the fork.
+          # Replace them with their actual absolute upstream URLs.
+          git config -f .gitmodules \
+            submodule.perfparser.url \
+            https://github.com/qt-creator/perfparser.git
+      
+          git config -f .gitmodules \
+            submodule.qbs.url \
+            https://github.com/qbs/qbs.git
+      
+          git submodule sync --recursive
+          git submodule update --init --force --recursive
 
       # Micromamba supplies a modern compiler, CMake, Ninja, Qt, and Go while
       # the actual build still runs inside Ubuntu 20.04.
