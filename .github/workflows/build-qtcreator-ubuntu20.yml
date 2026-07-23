@@ -1,0 +1,237 @@
+name: Build Qt Creator 20 for Ubuntu 20.04
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Qt Creator branch or tag to build"
+        required: true
+        default: "v20.0.0"
+  push:
+    branches:
+      - main
+      - master
+      - "20.0"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    # GitHub no longer has a standard Ubuntu 20.04 hosted runner.
+    # Every build command below runs inside this Ubuntu 20.04 container.
+    container:
+      image: ubuntu:20.04
+
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      QTC_VERSION: "20.0.0"
+      BUILD_DIR: ${{ github.workspace }}/build-qtcreator
+      INSTALL_DIR: ${{ github.workspace }}/package/QtCreator-20.0.0-Ubuntu20.04-x86_64
+      LLVM_DIR: ${{ github.workspace }}/llvm
+      LLVM_ARCHIVE_URL: https://download.qt.io/development_releases/prebuilt/libclang/qt/libclang-release_17.0.6-based-linux-Rhel8.8-gcc10.0-x86_64.7z
+      CMAKE_BUILD_PARALLEL_LEVEL: "2"
+
+    steps:
+      # ubuntu:20.04 is deliberately minimal. Install enough tools for
+      # checkout, Micromamba, extraction, and optional Linux integrations.
+      - name: Install Ubuntu bootstrap packages
+        shell: bash
+        run: |
+          set -euxo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            bash \
+            ca-certificates \
+            curl \
+            git \
+            bzip2 \
+            tar \
+            xz-utils \
+            p7zip-full \
+            file \
+            pkg-config \
+            patchelf \
+            libgl1-mesa-dev \
+            libxkbcommon-x11-dev \
+            libxcb-xinput-dev \
+            libxcb-xinerama0-dev \
+            libsecret-1-dev \
+            libdw-dev
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Check out Qt Creator source
+        uses: actions/checkout@v4
+        with:
+          # Manual run: build the tag/branch entered in the Actions page.
+          # Push run: build the branch that received the push.
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.ref_name }}
+          fetch-depth: 0
+          submodules: recursive
+
+      # Micromamba supplies a modern compiler, CMake, Ninja, Qt, and Go while
+      # the actual build still runs inside Ubuntu 20.04.
+      - name: Create Micromamba build environment
+        uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-name: qtcreator-build
+          create-args: >-
+            python=3.12
+            cmake>=3.30
+            ninja
+            gcc_linux-64=14
+            gxx_linux-64=14
+            pkg-config
+            patchelf
+            go
+            qt6-main=6.11.1
+            qt6-quick3d=6.11.1
+            qt6-serialport=6.11.1
+          init-shell: bash
+          generate-run-shell: true
+          post-cleanup: all
+
+      - name: Show tool versions
+        shell: micromamba-shell {0}
+        run: |
+          set -euxo pipefail
+          echo "CONDA_PREFIX=$CONDA_PREFIX"
+          echo "CC=$CC"
+          echo "CXX=$CXX"
+          cmake --version
+          ninja --version
+          "$CC" --version
+          test -f "$CONDA_PREFIX/lib/cmake/Qt6/Qt6Config.cmake"
+
+      # Qt Creator recommends its prebuilt patched LLVM/Clang package.
+      # The RHEL 8 build has an older glibc baseline than Ubuntu 20.04.
+      - name: Download LLVM and Clang
+        shell: micromamba-shell {0}
+        run: |
+          set -euxo pipefail
+          rm -rf "$LLVM_DIR"
+          mkdir -p "$LLVM_DIR"
+
+          curl --fail --location --retry 5 --retry-delay 5 \
+            "$LLVM_ARCHIVE_URL" \
+            --output /tmp/libclang.7z
+
+          7z x /tmp/libclang.7z "-o$LLVM_DIR"
+          rm -f /tmp/libclang.7z
+
+          CLANG_CONFIG="$(find "$LLVM_DIR" -type f -name ClangConfig.cmake -print -quit)"
+          test -n "$CLANG_CONFIG"
+
+          # ClangConfig.cmake is normally PREFIX/lib/cmake/clang/ClangConfig.cmake.
+          LLVM_PREFIX="$(dirname "$(dirname "$(dirname "$(dirname "$CLANG_CONFIG")")")")"
+          echo "LLVM_PREFIX=$LLVM_PREFIX" >> "$GITHUB_ENV"
+          echo "LLVM prefix: $LLVM_PREFIX"
+
+      - name: Configure Qt Creator
+        shell: micromamba-shell {0}
+        run: |
+          set -euxo pipefail
+          rm -rf "$BUILD_DIR" "$INSTALL_DIR"
+
+          cmake \
+            -S "$GITHUB_WORKSPACE" \
+            -B "$BUILD_DIR" \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER="$CC" \
+            -DCMAKE_CXX_COMPILER="$CXX" \
+            "-DCMAKE_PREFIX_PATH=$CONDA_PREFIX;$LLVM_PREFIX" \
+            -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON \
+            -DWITH_TESTS=OFF \
+            -DBUILD_QBS=OFF
+
+      - name: Build Qt Creator
+        shell: micromamba-shell {0}
+        run: |
+          set -euxo pipefail
+          cmake --build "$BUILD_DIR" --parallel 2
+
+      - name: Create self-contained installation
+        shell: micromamba-shell {0}
+        run: |
+          set -euxo pipefail
+          mkdir -p "$INSTALL_DIR"
+
+          cmake --install "$BUILD_DIR" --prefix "$INSTALL_DIR"
+          cmake --install "$BUILD_DIR" \
+            --prefix "$INSTALL_DIR" \
+            --component Dependencies
+
+          # Conda's Qt uses a newer C++ runtime than Ubuntu 20.04 provides.
+          # Copy these runtime libraries explicitly in case the Dependencies
+          # install component did not already include them.
+          mkdir -p "$INSTALL_DIR/lib/Qt/lib"
+          for library in \
+            libstdc++.so.6 \
+            libgcc_s.so.1 \
+            libatomic.so.1 \
+            libgomp.so.1
+          do
+            source_library="$CONDA_PREFIX/lib/$library"
+            if [[ -e "$source_library" ]]; then
+              cp -L "$source_library" "$INSTALL_DIR/lib/Qt/lib/$library"
+            fi
+          done
+
+          cat > "$INSTALL_DIR/qtcreator.sh" <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -e
+          ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+          export LD_LIBRARY_PATH="$ROOT/lib/Qt/lib:$ROOT/lib/qtcreator${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          export QT_PLUGIN_PATH="$ROOT/lib/Qt/plugins${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}"
+          export QML2_IMPORT_PATH="$ROOT/lib/Qt/qml${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}"
+
+          exec "$ROOT/bin/qtcreator" "$@"
+          SCRIPT
+          chmod +x "$INSTALL_DIR/qtcreator.sh"
+
+      - name: Validate the packaged build
+        shell: micromamba-shell {0}
+        run: |
+          set -euxo pipefail
+
+          if ldd "$INSTALL_DIR/bin/qtcreator" | grep -F "not found"; then
+            echo "The main Qt Creator executable has missing libraries."
+            exit 1
+          fi
+
+          mkdir -p /tmp/qtcreator-test-home
+
+          env -i \
+            HOME=/tmp/qtcreator-test-home \
+            USER=runner \
+            PATH=/usr/bin:/bin \
+            QT_QPA_PLATFORM=offscreen \
+            "$INSTALL_DIR/qtcreator.sh" -version
+
+      - name: Create archive and checksum
+        shell: micromamba-shell {0}
+        run: |
+          set -euxo pipefail
+          ARCHIVE="$GITHUB_WORKSPACE/qtcreator-${QTC_VERSION}-ubuntu20.04-x86_64.tar.xz"
+
+          tar \
+            -C "$(dirname "$INSTALL_DIR")" \
+            -cJf "$ARCHIVE" \
+            "$(basename "$INSTALL_DIR")"
+
+          sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
+          ls -lh "$ARCHIVE" "$ARCHIVE.sha256"
+
+      - name: Upload Qt Creator artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: qtcreator-${{ env.QTC_VERSION }}-ubuntu20.04-x86_64
+          path: |
+            qtcreator-${{ env.QTC_VERSION }}-ubuntu20.04-x86_64.tar.xz
+            qtcreator-${{ env.QTC_VERSION }}-ubuntu20.04-x86_64.tar.xz.sha256
+          if-no-files-found: error
+          retention-days: 14
