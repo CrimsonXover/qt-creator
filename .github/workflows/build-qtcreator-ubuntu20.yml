@@ -54,6 +54,7 @@ jobs:
             file \
             pkg-config \
             patchelf \
+            chrpath \
             libgl1-mesa-dev \
             libxkbcommon-x11-dev \
             libxcb-xinput-dev \
@@ -65,27 +66,32 @@ jobs:
       - name: Check out Qt Creator source
         uses: actions/checkout@v4
         with:
+          # Manual run: build the tag/branch entered in the Actions page.
+          # Push run: build the branch that received the push.
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.ref_name }}
           fetch-depth: 0
+          # Fetch submodules after correcting relative URLs used by forks.
           submodules: false
-      
-      - name: Fix and fetch submodules
+
+      - name: Fix and fetch Qt Creator submodules
         shell: bash
         run: |
           set -euxo pipefail
-      
-          # Relative URLs in Qt Creator's .gitmodules resolve against the fork.
-          # Replace them with their actual absolute upstream URLs.
+
+          # The repository is mounted into the Ubuntu 20.04 container with a
+          # different owner. Trust this exact workspace before running Git.
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          
+
+          # Qt Creator uses ../perfparser.git, which resolves against the fork
+          # owner. Point it explicitly at the upstream repository instead.
           git config -f .gitmodules \
             submodule.perfparser.url \
             https://github.com/qt-creator/perfparser.git
-      
+
           git config -f .gitmodules \
             submodule.qbs.url \
             https://github.com/qbs/qbs.git
-      
+
           git submodule sync --recursive
           git submodule update --init --force --recursive
 
@@ -121,27 +127,27 @@ jobs:
           cmake --version
           ninja --version
           "$CC" --version
+          command -v chrpath
+          chrpath --version
           test -f "$CONDA_PREFIX/lib/cmake/Qt6/Qt6Config.cmake"
 
-      - name: Patch bundled libarchive for Ubuntu 20.04
+      - name: Patch bundled libarchive for portable glibc baseline
         shell: micromamba-shell {0}
         run: |
           set -euxo pipefail
-      
+
           CONFIG_FILE="$GITHUB_WORKSPACE/src/libs/3rdparty/libarchive/config_unix.h"
           test -f "$CONFIG_FILE"
-      
-          # Qt Creator's generated config assumes glibc 2.34 APIs.
-          # Disable them so libarchive uses its portable sysconf/close fallback.
+
+          # Qt Creator 20's generated config assumes glibc 2.34 APIs.
+          # The conda compiler intentionally targets an older glibc baseline,
+          # so use libarchive's portable file-descriptor closing fallback.
           sed -i \
             -e 's/^#define HAVE_CLOSEFROM 1$/#define HAVE_CLOSEFROM 0/' \
             -e 's/^#define HAVE_CLOSE_RANGE 1$/#define HAVE_CLOSE_RANGE 0/' \
             "$CONFIG_FILE"
-      
-          echo "Patched libarchive configuration:"
+
           grep -E '^#define HAVE_CLOSE(FROM|_RANGE) ' "$CONFIG_FILE"
-      
-          # Fail immediately if the expected source format changed.
           grep -q '^#define HAVE_CLOSEFROM 0$' "$CONFIG_FILE"
           grep -q '^#define HAVE_CLOSE_RANGE 0$' "$CONFIG_FILE"
 
@@ -275,3 +281,4 @@ jobs:
             qtcreator-${{ env.QTC_VERSION }}-ubuntu20.04-x86_64.tar.xz.sha256
           if-no-files-found: error
           retention-days: 14
+
