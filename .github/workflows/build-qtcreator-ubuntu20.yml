@@ -117,6 +117,50 @@ jobs:
           generate-run-shell: true
           post-cleanup: all
 
+      - name: Install chrpath compatibility wrapper backed by patchelf
+        shell: micromamba-shell {0}
+        run: |
+          set -euxo pipefail
+
+          # Qt Creator 20's deploy scripts require a command named chrpath.
+          # The real chrpath cannot grow an ELF RPATH/RUNPATH string, while
+          # patchelf can. Put a compatible wrapper first in PATH.
+          cat > "$CONDA_PREFIX/bin/chrpath" <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          case "${1:-}" in
+            -l)
+              file="${2:?missing ELF file}"
+              rpath="$(patchelf --print-rpath "$file")"
+              if [[ -z "$rpath" ]]; then
+                exit 1
+              fi
+              printf '%s: RUNPATH=%s\n' "$file" "$rpath"
+              ;;
+            -r)
+              new_rpath="${2:?missing new RPATH}"
+              file="${3:?missing ELF file}"
+              patchelf --set-rpath "$new_rpath" "$file"
+              ;;
+            -d)
+              file="${2:?missing ELF file}"
+              patchelf --remove-rpath "$file"
+              ;;
+            --version|-v)
+              echo "chrpath compatibility wrapper using $(patchelf --version)"
+              ;;
+            *)
+              echo "Unsupported chrpath arguments: $*" >&2
+              exit 2
+              ;;
+          esac
+          SCRIPT
+
+          chmod +x "$CONDA_PREFIX/bin/chrpath"
+          test "$(command -v chrpath)" = "$CONDA_PREFIX/bin/chrpath"
+          chrpath --version
+
       - name: Show tool versions
         shell: micromamba-shell {0}
         run: |
