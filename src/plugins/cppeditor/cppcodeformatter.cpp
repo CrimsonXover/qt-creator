@@ -4,7 +4,6 @@
 #include "cppcodeformatter.h"
 
 #include <texteditor/textdocumentlayout.h>
-#include <cplusplus/Lexer.h>
 
 #include <utils/qtcassert.h>
 
@@ -703,6 +702,21 @@ bool CodeFormatter::isInRawStringLiteral(const QTextBlock &block) const
     if (!loadBlockData(block.previous(), &blockData))
         return false;
     return !blockData.m_endState.isEmpty() && blockData.m_endState.top().type == raw_string_open;
+}
+
+// Returns whether block is a continuation (body or closing) line of a multi-line
+// comment that was opened on a previous line.
+bool CodeFormatter::isInCommentContinuation(const QTextBlock &block) const
+{
+    if (!block.previous().isValid())
+        return false;
+    BlockData blockData;
+    if (!loadBlockData(block.previous(), &blockData))
+        return false;
+    if (blockData.m_endState.isEmpty())
+        return false;
+    const int type = blockData.m_endState.top().type;
+    return type == multiline_comment_start || type == multiline_comment_cont;
 }
 
 CodeFormatter::State CodeFormatter::state(int belowTop) const

@@ -36,7 +36,7 @@
 #include <utils/dialogtask.h>
 #include <utils/environment.h>
 #include <utils/fileinprojectfinder.h>
-#include <utils/utilsicons.h>
+#include <utils/icon.h>
 #include <utils/networkaccessmanager.h>
 #include <utils/qtcassert.h>
 #include <utils/temporaryfile.h>
@@ -1214,16 +1214,38 @@ void AxivionPluginPrivate::onDocumentOpened(IDocument *doc)
     if (filePath.isEmpty())
         return;
 
-    const auto handler = [docFilePath](const Dto::FileViewDto &data) {
-        if (data.lineMarkers.empty())
-            return;
-        handleIssuesForFile(data, docFilePath, std::nullopt);
-    };
-
     const bool useGlobal = m_dashboardMode == DashboardMode::Global
             || !currentIssueHasValidPathMapping();
-    const Group recipe = lineMarkerRecipe(useGlobal ? DashboardMode::Global
-                                                    : DashboardMode::Local, filePath, handler);
+    const DashboardMode mode = useGlobal ? DashboardMode::Global : DashboardMode::Local;
+
+    struct FileViewStorage
+    {
+        std::optional<Dto::FileViewDto> data;
+    };
+
+    const Storage<DownloadData> storage;
+    const Storage<FileViewStorage> markerStorage;
+
+    const auto handler = [markerStorage, storage, mode](const Dto::FileViewDto &data) {
+        markerStorage->data = data;
+        if (data.sourceCodeUrl)
+            storage->inputUrl = resolveDashboardInfoUrl(mode, *data.sourceCodeUrl);
+        storage->expectedContentType = ContentType::PlainText;
+    };
+
+    const auto markerHandler = [markerStorage, docFilePath, storage] {
+        if (!markerStorage->data || markerStorage->data->lineMarkers.empty())
+            return;
+        handleIssuesForFile(*markerStorage->data, docFilePath, std::nullopt, storage->outputData);
+    };
+
+    const Group recipe = {
+        storage,
+        markerStorage,
+        lineMarkerRecipe(mode, filePath, handler),
+        downloadDataRecipe(mode, storage) || successItem,
+        onGroupDone(markerHandler)
+    };
     m_docMarksRunner.start(doc, recipe);
 }
 

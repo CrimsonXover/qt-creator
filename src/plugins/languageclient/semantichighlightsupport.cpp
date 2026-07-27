@@ -7,6 +7,7 @@
 #include "languageclientmanager.h"
 
 #include <texteditor/fontsettings.h>
+#include <texteditor/semantichighlighter.h>
 #include <texteditor/syntaxhighlighter.h>
 #include <texteditor/texteditor.h>
 #include <texteditor/syntaxhighlighter.h>
@@ -281,8 +282,8 @@ void SemanticTokenSupport::updateFormatHash()
 
 void SemanticTokenSupport::onCurrentEditorChanged(Core::IEditor *editor)
 {
-    if (auto textEditor = qobject_cast<BaseTextEditor *>(editor))
-        updateSemanticTokens(textEditor->textDocument());
+    if (auto widget = TextEditorWidget::fromEditor(editor))
+        updateSemanticTokens(widget->textDocument());
 }
 
 void SemanticTokenSupport::setTokenTypesMap(const QMap<QString, int> &tokenTypesMap)

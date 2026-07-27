@@ -17,9 +17,9 @@
 #include <texteditor/textmark.h>
 
 #include <utils/filepath.h>
+#include <utils/icon.h>
 #include <utils/qtcprocess.h>
 #include <utils/stringutils.h>
-#include <utils/utilsicons.h>
 
 #include <vcsbase/vcsbaseconstants.h>
 #include <vcsbase/vcsbaseeditor.h>
@@ -43,27 +43,12 @@ using namespace TextEditor;
 using namespace Utils;
 using namespace VcsBase;
 
-BlameMark::BlameMark(const FilePath &fileName, int lineNumber, const CommitInfo &info)
-    : TextEditor::TextMark(fileName,
-                           lineNumber,
-                           {Tr::tr("Git Blame"), Constants::TEXT_MARK_CATEGORY_BLAME})
-    , m_info(info)
-{
-    initialize();
-}
-
 BlameMark::BlameMark(TextEditor::TextDocument *document, int lineNumber, const CommitInfo &info)
     : TextEditor::TextMark(document,
                            lineNumber,
                            {Tr::tr("Git Blame"), Constants::TEXT_MARK_CATEGORY_BLAME})
     , m_info(info)
 {
-    initialize();
-}
-
-void BlameMark::initialize()
-{
-    const CommitInfo &info = m_info;
     QString text = info.shortAuthor + " " + info.authorDate.toString("yyyy-MM-dd");
     if (settings().instantBlameShowSubject())
         text += " • " + info.subject;
@@ -92,13 +77,7 @@ bool BlameMark::addToolTipContent(QLayout *target) const
         textLabel, &QLabel::linkActivated, textLabel, [info = m_info](const QString &link) {
             qCInfo(log) << "Link activated with target:" << link;
             const QString hash = (link == "blameParent") ? info.hash + "^" : info.hash;
-
-            // The tooltip may be shown in editors whose document has no file
-            // path of its own (e.g. the inline diff editor), so derive the
-            // context from the blamed file instead of the current editor.
-            const FilePath topLevel
-                = Core::VcsManager::findTopLevelForDirectory(info.filePath.parentDir());
-            QTC_ASSERT(!topLevel.isEmpty(), return);
+            const FilePath topLevel = info.topLevel;
 
             if (link.startsWith("blame") || link == "revert" || link == "showFile") {
                 const FilePath path = topLevel;
@@ -341,6 +320,17 @@ void InstantBlame::setup()
     });
 }
 
+void InstantBlame::repeat()
+{
+    if (!settings().instantBlame())
+        return;
+
+    QTimer::singleShot(20, this, [this] {
+        refreshWorkingDirectory();
+        scheduleInstantBlame();
+    });
+}
+
 // Porcelain format of git blame output:
 // Consists of 12 or 13 lines (line 11 can be missing, "boundary", or "previous")
 // The first line contains hash, original line, current line,
@@ -462,7 +452,10 @@ void InstantBlame::perform()
     qCDebug(log) << "New editor line:" << line;
     m_lastVisitedEditorLine = line;
 
-    const FilePath filePath = widget->textDocument()->filePath();
+    const FilePath sourceFilePath = VcsBase::source(widget->textDocument());
+    const FilePath filePath = !sourceFilePath.isEmpty()
+                                  ? sourceFilePath
+                                  : widget->textDocument()->filePath();
     const QString lineString = QString("%1,%1").arg(line);
 
     QStringList options = {"blame", "-p"};
@@ -470,11 +463,16 @@ void InstantBlame::perform()
         options.append("-w");
     if (settings().instantBlameIgnoreLineMoves())
         options.append("-M");
+    if (const QVariant ref = widget->textDocument()->property("GitReference"); ref.isValid())
+        options.append(ref.toString());
     options.append({"-L", lineString, "--", filePath.path()});
     qCDebug(log) << "Running git" << options.join(' ');
 
     const Storage<CommitInfo> infoStorage;
-    const auto blameHandler = [this, filePath, line, infoStorage](const CommandResult &result) {
+    const auto blameHandler = [this, filePath, line, infoStorage,
+                               doc = QPointer(widget->textDocument())](const CommandResult &result) {
+        if (doc.isNull())
+            return;
         if (result.result() == ProcessResult::FinishedWithError
                 && result.cleanedStdErr().contains("no such path")) {
             stop();
@@ -486,7 +484,8 @@ void InstantBlame::perform()
             return;
         }
         *infoStorage = parseBlameOutput(output.split('\n'), filePath, line, m_author);
-        m_blameMark.reset(new BlameMark(filePath, line, *infoStorage));
+        infoStorage->topLevel = m_workingDirectory;
+        m_blameMark.reset(new BlameMark(doc.get(), line, *infoStorage));
     };
     const TextEncoding encoding = m_encoding;
     const auto onLogSetup = [this, infoStorage, encoding](Process &process) -> SetupResult {
@@ -540,10 +539,16 @@ void InstantBlame::stop()
 
 void InstantBlame::refreshWorkingDirectory()
 {
-    const FilePath workingDirectory = currentState().currentFileTopLevel();
+    FilePath workingDirectory = currentState().currentFileTopLevel();
 
-    if (workingDirectory.isEmpty())
-        return;
+    if (workingDirectory.isEmpty()) {
+        const TextEditorWidget *widget = TextEditorWidget::currentTextEditorWidget();
+        if (!widget)
+            return;
+        const QString repo = widget->textDocument()->property("GitRepository").toString();
+        if (!repo.isEmpty())
+            workingDirectory = FilePath::fromString(repo);
+    }
 
     if (m_workingDirectory == workingDirectory)
         return;
@@ -654,6 +659,7 @@ void BaselineBlame::perform()
         *infoStorage = parseBlameOutput(output.split('\n'), m_workingFilePath, line, {});
         infoStorage->viewRevision = m_ref;
         infoStorage->viewFileName = m_relativeFile;
+        infoStorage->topLevel = m_topLevel;
         m_blameMark.reset(new BlameMark(m_widget->textDocument(), line, *infoStorage));
     };
     const TextEncoding encoding = m_encoding;

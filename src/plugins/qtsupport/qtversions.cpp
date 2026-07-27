@@ -13,11 +13,8 @@
 
 #include <remote/remotelinux_constants.h>
 
-#include <coreplugin/featureprovider.h>
 
 #include <utils/algorithm.h>
-#include <utils/hostosinfo.h>
-#include <utils/qtcassert.h>
 
 namespace QtSupport::Internal {
 
@@ -40,14 +37,15 @@ public:
     QSet<Utils::Id> targetDeviceTypes() const final
     {
         QSet<Utils::Id> result = {ProjectExplorer::Constants::DESKTOP_DEVICE_TYPE};
-        if (Utils::contains(qtAbis(), [](const ProjectExplorer::Abi a) {
-                return a.os() == ProjectExplorer::Abi::LinuxOS;
-            }))
+        auto targetsOs = [this](const ProjectExplorer::Abi::OS &abi) {
+            return Utils::contains(qtAbis(), Utils::equal(&ProjectExplorer::Abi::os, abi));
+        };
+        if (targetsOs(ProjectExplorer::Abi::LinuxOS))
             result.insert(Remote::Constants::GenericLinuxOsType);
-        if (Utils::contains(qtAbis(), [](const ProjectExplorer::Abi a) {
-                return a.os() == ProjectExplorer::Abi::DarwinOS;
-            }))
+        if (targetsOs(ProjectExplorer::Abi::DarwinOS))
             result.insert(Remote::Constants::GenericMacOsType);
+        if (targetsOs(ProjectExplorer::Abi::WindowsOS))
+            result.insert(Remote::Constants::GenericWindowsOsType);
         return result;
     }
 };

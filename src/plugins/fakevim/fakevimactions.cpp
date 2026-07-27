@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0
 
 #include "fakevimactions.h"
-#include "fakevimhandler.h"
 #include "fakevimtr.h"
 
 // Please do not add any direct dependencies to other Qt Creator code  here.
@@ -11,6 +10,7 @@
 // allows easy reuse with any QTextEdit or QPlainTextEdit derived class.
 
 #ifndef FAKEVIM_STANDALONE
+#include <coreplugin/dialogs/ioptionspage.h>
 #include <texteditor/icodestylepreferences.h>
 #include <texteditor/tabsettings.h>
 #include <texteditor/codestylepool.h>
@@ -19,7 +19,6 @@
 
 #include <utils/hostosinfo.h>
 #include <utils/layoutbuilder.h>
-#include <utils/qtcassert.h>
 
 #include <QDebug>
 
@@ -75,6 +74,8 @@ FakeVimSettings::FakeVimSettings()
     setup(&expandTab,      false, "ExpandTab",      "et",  Tr::tr("Expand tabulators"));
     setup(&autoIndent,     false, "AutoIndent",     "ai",  Tr::tr("Automatic indentation"));
     setup(&smartIndent,    false, "SmartIndent",    "si",  Tr::tr("Smart indentation"));
+    setup(&useEditorTabSettings, false, "UseEditorTabSettings", {},
+          Tr::tr("Use the editor's tabulator and indentation settings"));
     setup(&incSearch,      true,  "IncSearch",      "is",  Tr::tr("Incremental search"));
     setup(&useCoreSearch,  false, "UseCoreSearch",  "ucs", Tr::tr("Use search dialog"));
     setup(&smartCase,      false, "SmartCase",      "scs", Tr::tr("Use smartcase"));
@@ -84,6 +85,9 @@ FakeVimSettings::FakeVimSettings()
     setup(&showCmd,        true,  "ShowCmd",        "sc",  Tr::tr("Show partial command"));
     setup(&relativeNumber, false, "RelativeNumber", "rnu", Tr::tr("Show line numbers relative to cursor"));
     setup(&blinkingCursor, false, "BlinkingCursor", "bc",  Tr::tr("Blinking cursor"));
+    setup(&cursorFlashTime, 0,    "CursorFlashTime", {},   Tr::tr("Cursor blink rate:"));
+    setup(&commandLineInEditor, false, "CommandLineInEditor", {},
+          Tr::tr("Command line in the editor"));
     setup(&scrollOff,      0,     "ScrollOff",      "so",  Tr::tr("Scroll offset:"));
     setup(&textWidth,      0,     "TextWidth",      "tw",  Tr::tr("Text width:"));
     setup(&timeout,        true,  "Timeout",        "to",  Tr::tr("Use timeout for mappings"));
@@ -92,6 +96,9 @@ FakeVimSettings::FakeVimSettings()
                                   "Backspace",      "bs",  Tr::tr("Backspace:"));
     setup(&isKeyword,      "@,48-57,_,192-255,a-z,A-Z",
                                   "IsKeyword",      "isk", Tr::tr("Keyword characters:"));
+    setup(&tabOut,         {},    "TabOut",         {},    Tr::tr("Tab jumps over:"));
+    tabOut.setToolTip(Tr::tr("Characters that Tab moves the cursor past in insert mode "
+        "instead of indenting, for example )]}\">'. Leave empty to disable."));
     setup(&clipboard,      {},    "Clipboard",      "cb",  "");
     setup(&formatOptions,  {},    "formatoptions",  "fo",  "");
 
@@ -123,8 +130,12 @@ FakeVimSettings::FakeVimSettings()
     timeoutlen.setRange(0, 10000);
     timeoutlen.setToolTip(Tr::tr("Time in milliseconds to wait for the rest of a "
         "mapped key sequence (Vim timeoutlen option)."));
+    cursorFlashTime.setRange(0, 5000);
+    cursorFlashTime.setToolTip(Tr::tr("Blink period of the text cursor in milliseconds. "
+        "0 uses the system default. Only used while the cursor is blinking."));
     backspace.setDisplayStyle(FvStringAspect::LineEditDisplay);
     isKeyword.setDisplayStyle(FvStringAspect::LineEditDisplay);
+    tabOut.setDisplayStyle(FvStringAspect::LineEditDisplay);
 
     const QString vimrcDefault = QLatin1String(HostOsInfo::isAnyUnixHost()
                 ? "$HOME/.vimrc" : "%USERPROFILE%\\_vimrc");
@@ -143,6 +154,7 @@ FakeVimSettings::FakeVimSettings()
                 smartIndent,
                 expandTab,
                 smartTab,
+                useEditorTabSettings,
                 hlSearch,
                 showCmd,
                 startOfLine,
@@ -159,16 +171,18 @@ FakeVimSettings::FakeVimSettings()
                 passControlKey,
                 commaPassesShortcuts,
                 relativeNumber,
+                commandLineInEditor,
                 tildeOp,
                 timeout
             }
         };
 
-        Row ints { shiftWidth, tabStop, scrollOff, timeoutlen, st };
+        Row ints { shiftWidth, tabStop, scrollOff, timeoutlen, cursorFlashTime, st };
 
         Column strings {
             backspace,
             isKeyword,
+            tabOut,
             Row {readVimRc, vimRcPath}
         };
 

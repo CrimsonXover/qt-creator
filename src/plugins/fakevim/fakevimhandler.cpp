@@ -62,7 +62,6 @@
 
 #include <algorithm>
 #include <climits>
-#include <ctype.h>
 #include <functional>
 #include <optional>
 
@@ -1880,10 +1879,50 @@ public:
     int logicalCursorColumn() const; // as visible on screen
     int physicalToLogicalColumn(int physical, const QString &text) const;
     int logicalToPhysicalColumn(int logical, const QString &text) const;
+    // Fetches the editor tab/indent settings when useEditorTabSettings is on
+    // and a handler for them is wired (QTCREATORBUG-14273).
+    bool editorTabSettings(int *tabSize, int *indentSize, bool *spacesForTabs) const
+    {
+        if (!s.useEditorTabSettings())
+            return false;
+        int ts = -1;
+        int is = -1;
+        bool spaces = true;
+        q->tabSettingsRequested(&ts, &is, &spaces);
+        if (ts <= 0) // no editor settings available (e.g. standalone)
+            return false;
+        if (tabSize)
+            *tabSize = ts;
+        if (indentSize)
+            *indentSize = is;
+        if (spacesForTabs)
+            *spacesForTabs = spaces;
+        return true;
+    }
     // Effective tab stop, never below 1. Guards the column arithmetic below
     // against a stray "tabstop=0" (e.g. from a hand-edited settings file)
     // dividing by zero (QTCREATORBUG-29376).
-    int tabStop() const { return qMax(1, s.tabStop()); }
+    int tabStop() const
+    {
+        int ts;
+        if (editorTabSettings(&ts, nullptr, nullptr))
+            return qMax(1, ts);
+        return qMax(1, s.tabStop());
+    }
+    int shiftWidth() const
+    {
+        int sw;
+        if (editorTabSettings(nullptr, &sw, nullptr))
+            return sw;
+        return s.shiftWidth();
+    }
+    bool expandTab() const
+    {
+        bool et;
+        if (editorTabSettings(nullptr, nullptr, &et))
+            return et;
+        return s.expandTab();
+    }
     int windowScrollOffset() const; // return scrolloffset but max half the current window height
     Column cursorColumn() const; // as visible on screen
     void updateFirstVisibleLine();
@@ -2884,7 +2923,7 @@ void FakeVimHandler::Private::ensureCursorVisible()
 
 void FakeVimHandler::Private::updateEditor()
 {
-    setTabSize(s.tabStop());
+    setTabSize(tabStop());
     setupCharClass();
 }
 
@@ -2969,8 +3008,23 @@ EventResult FakeVimHandler::Private::handleKey(const Input &input)
 
 bool FakeVimHandler::Private::handleCommandBufferPaste(const Input &input)
 {
-    if (input.isControl('r')
-        && (g.subsubmode == SearchSubSubMode || g.mode == ExMode)) {
+    const bool inCommandLine = g.subsubmode == SearchSubSubMode || g.mode == ExMode;
+    if (inCommandLine && input.isControl('v')) {
+        // OS-style paste of the clipboard into the command line, in addition to
+        // the Vim way with Ctrl-R (QTCREATORBUG-23785). Only the first line is
+        // used, since the command line is single-line.
+        CommandBuffer &buffer = (g.subsubmode == SearchSubSubMode)
+            ? g.searchBuffer : g.commandBuffer;
+        QString text = QApplication::clipboard()->text();
+        const int newline = text.indexOf('\n');
+        if (newline != -1)
+            text.truncate(newline);
+        text.remove('\r');
+        buffer.insertText(text);
+        updateMiniBuffer();
+        return true;
+    }
+    if (input.isControl('r') && inCommandLine) {
         g.minibufferData = input;
         return true;
     }
@@ -4726,6 +4780,9 @@ bool FakeVimHandler::Private::handleNoSubMode(const Input &input)
             pushUndoState();
             setAnchor();
         }
+    } else if (g.gflag && input.is('d')) {
+        // gd: go to definition of the symbol under the cursor.
+        q->tagJumpRequested();
     } else if ((input.is('c') || input.is('d') || input.is('y')) && isNoVisualMode()) {
         setAnchor();
         g.opcount = g.mvcount;
@@ -4859,7 +4916,14 @@ bool FakeVimHandler::Private::handleNoSubMode(const Input &input)
     } else if (input.isControl('o')) {
         jump(-count());
     } else if (input.is('p') || input.is('P') || input.isShift(Qt::Key_Insert)) {
-        dotCommand = QString("\"%1%2%3").arg(QChar(m_register)).arg(count()).arg(input.asChar());
+        if (isVisualMode()) {
+            // Vim's redo for a paste over a visual selection records only the
+            // deletion of the selection, not the put text, so "." deletes the
+            // re-selected region without inserting anything (QTCREATORBUG-18298).
+            dotCommand = visualDotCommand() + "d";
+        } else {
+            dotCommand = QString("\"%1%2%3").arg(QChar(m_register)).arg(count()).arg(input.asChar());
+        }
 
         pasteText(!input.is('P'));
         setTargetColumn();
@@ -5717,9 +5781,17 @@ void FakeVimHandler::Private::handleInsertMode(const Input &input)
     } else if (input.isKey(Key_PageUp) || input.isControl('b')) {
         movePageUp();
     } else if (input.isKey(Key_Tab)) {
-        if (q->tabPressedInInsertMode()) {
+        const QString tabOut = s.tabOut();
+        const int pos = position();
+        if (!tabOut.isEmpty() && pos < lastPositionInDocument()
+                && tabOut.contains(document()->characterAt(pos))) {
+            // Tab jumps over the next closing character instead of inserting a
+            // tab (QTCREATORBUG-27441).
+            setPosition(pos + 1);
+            setTargetColumn();
+        } else if (q->tabPressedInInsertMode()) {
             m_buffer->insertState.insertingSpaces = true;
-            if (s.expandTab()) {
+            if (expandTab()) {
                 const int ts = tabStop();
                 const int col = logicalCursorColumn();
                 QString str = QString(ts - col % ts, ' ');
@@ -5736,8 +5808,8 @@ void FakeVimHandler::Private::handleInsertMode(const Input &input)
         shiftRegionRight(1);
     } else if (input.isControl('d')) {
         // remove one level of indentation from the current line
-        const int shift = s.shiftWidth();
-        const int tab = s.tabStop();
+        const int shift = shiftWidth();
+        const int tab = tabStop();
         int line = cursorLine() + 1;
         int pos = firstPositionInLine(line);
         QString text = lineContents(line);
@@ -7144,6 +7216,12 @@ bool FakeVimHandler::Private::handleExPluginCommand(const ExCommand &cmd)
     q->handleExCommandRequested(&handled, cmd);
     //qDebug() << "HANDLER REQUEST: " << cmd.cmd << handled;
     if (handled && hasValidEditor()) {
+        // The command ran while m_inFakeVim was set, so a cursor move it made
+        // did not flag onCursorPositionChanged; force pullCursor to re-read it.
+        // Visual mode keeps the pre-existing gated behavior: there commitCursor()
+        // has extended the selection for display, which must not be pulled back.
+        if (isNoVisualMode())
+            m_cursorNeedsUpdate = true;
         pullCursor();
         if (m_cursor.position() != pos)
             recordJump(pos);
@@ -7378,7 +7456,7 @@ void FakeVimHandler::Private::shiftRegionRight(int repeat)
     if (s.startOfLine())
         targetPos = firstPositionInLine(beginLine);
 
-    const int sw = s.shiftWidth();
+    const int sw = shiftWidth();
     g.movetype = MoveLineWise;
     beginEditBlock();
     QTextBlock block = document()->findBlockByLineNumber(beginLine - 1);
@@ -9254,8 +9332,8 @@ Column FakeVimHandler::Private::indentation(const QString &line) const
 
 QString FakeVimHandler::Private::tabExpand(int n) const
 {
-    int ts = s.tabStop();
-    if (s.expandTab() || ts < 1)
+    int ts = tabStop();
+    if (expandTab() || ts < 1)
         return QString(n, ' ');
     return QString(n / ts, '\t')
          + QString(n % ts, ' ');
@@ -10012,6 +10090,14 @@ bool FakeVimHandler::eventFilter(QObject *ob, QEvent *ev)
         // Make the visual selection inclusive before a Qt Creator shortcut
         // (e.g. Advanced Find) reads it synchronously (QTCREATORBUG-27442).
         d->fixExternalCursor(false);
+        // Accept plain text-input keys so they arrive as key presses instead of
+        // being eaten by the shortcut machinery. Needed for layouts that reach
+        // characters through layout modifiers (QTCREATORBUG-24904); mirrors the
+        // editor's own handling (QTCREATORBUG-22854).
+        const Qt::KeyboardModifiers mods = kev->modifiers();
+        kev->setAccepted((mods == Qt::NoModifier || mods == Qt::ShiftModifier
+                          || mods == Qt::KeypadModifier)
+                         && kev->key() < Qt::Key_Escape);
         return true;
     }
 

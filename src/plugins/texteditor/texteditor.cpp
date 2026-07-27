@@ -2296,6 +2296,16 @@ TextEditorWidget *TextEditorWidget::fromEditor(const IEditor *editor)
     return nullptr;
 }
 
+QList<TextEditorWidget *> TextEditorWidget::textEditorWidgetsForDocument(TextDocument *document)
+{
+    QList<TextEditorWidget *> result;
+    for (IEditor *editor : DocumentModel::editorsForDocument(document)) {
+        if (TextEditorWidget *widget = fromEditor(editor))
+            result << widget;
+    }
+    return result;
+}
+
 void TextEditorWidgetPrivate::editorContentsChange(int position, int charsRemoved, int charsAdded)
 {
     updateSuggestion();
@@ -6493,6 +6503,25 @@ void TextEditorWidget::paintEvent(QPaintEvent *e)
             paintOffset.ry() -= mainLayoutOffset;
             paintBlock(&painter, data.block, paintOffset, blockData.selections, data.eventRect);
 
+            if (!d->m_displaySettings.m_showBreak.isEmpty() && blockData.layout->lineCount() > 1) {
+                // Draw the wrapped-line marker (vim's 'showbreak') into the room
+                // the layout reserved at the start of each continuation line.
+                painter.save();
+                painter.setFont(data.block.charFormat().font());
+                painter.setPen(data.context.palette.text().color());
+                const QString marker = d->m_displaySettings.m_showBreak;
+                const qreal markerWidth = painter.fontMetrics().horizontalAdvance(marker);
+                const qreal blockLeft = paintOffset.x() + document()->documentMargin();
+                const bool beforeIndent = d->m_displaySettings.m_breakindentSbr;
+                for (int i = 1; i < blockData.layout->lineCount(); ++i) {
+                    const QTextLine line = blockData.layout->lineAt(i);
+                    const qreal x = beforeIndent ? blockLeft
+                                                 : paintOffset.x() + line.x() - markerWidth;
+                    painter.drawText(QPointF(x, paintOffset.y() + line.y() + line.ascent()), marker);
+                }
+                painter.restore();
+            }
+
             if (data.isEditable && !blockData.layout->preeditAreaText().isEmpty()) {
                 if (data.context.cursorPosition < -1) {
                     const int cursorPos = blockData.layout->preeditAreaPosition()
@@ -9471,6 +9500,11 @@ void TextEditorWidget::setDisplaySettings(const DisplaySettingsData &ds)
     QTC_ASSERT((fs.relativeLineSpacing() == 100) || (fs.relativeLineSpacing() != 100
         && lineWrapMode() == PlainTextEdit::NoWrap), setLineWrapMode(PlainTextEdit::NoWrap));
 
+    const bool wrapping = lineWrapMode() != PlainTextEdit::NoWrap;
+    editorLayout()->setBreakIndent(ds.m_breakindent && wrapping,
+                                   ds.m_breakindentMin, ds.m_breakindentShift);
+    editorLayout()->setShowBreak(wrapping ? ds.m_showBreak : QString(), ds.m_breakindentSbr);
+
     setLineNumbersVisible(ds.m_displayLineNumbers);
     setHighlightCurrentLine(ds.m_highlightCurrentLine);
     setRevisionsVisible(ds.m_markTextChanges);
@@ -10240,8 +10274,7 @@ int BaseTextEditor::currentLine() const
 
 int BaseTextEditor::currentColumn() const
 {
-    QTextCursor cursor = editorWidget()->textCursor();
-    return cursor.position() - cursor.block().position() + 1;
+    return editorWidget()->textCursor().positionInBlock() + 1;
 }
 
 void BaseTextEditor::gotoLine(int line, int column, bool centerLine)

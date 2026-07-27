@@ -11,7 +11,7 @@ namespace Utils { class FilePath {}; }
 
 #else
 
-#include <coreplugin/dialogs/ioptionspage.h>
+#include <utils/aspects.h>
 
 #endif
 
@@ -116,6 +116,7 @@ public:
     FvBoolAspect expandTab;
     FvBoolAspect autoIndent;
     FvBoolAspect smartIndent;
+    FvBoolAspect useEditorTabSettings;
 
     FvBoolAspect incSearch;
     FvBoolAspect useCoreSearch;
@@ -134,6 +135,9 @@ public:
 
     // @,48-57,_,192-255
     FvStringAspect isKeyword;
+
+    // Characters that TAB jumps over in insert mode instead of indenting.
+    FvStringAspect tabOut;
 
     // other actions
     FvBoolAspect showMarks;
@@ -160,6 +164,8 @@ public:
     FvBoolAspect emulateVimUnimpaired;
 
     FvBoolAspect blinkingCursor;
+    FvIntegerAspect cursorFlashTime;
+    FvBoolAspect commandLineInEditor;
 
 private:
     void setup(FvBaseAspect *aspect, const QVariant &value,

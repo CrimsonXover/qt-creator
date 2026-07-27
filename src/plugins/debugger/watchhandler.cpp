@@ -17,6 +17,7 @@
 #include "registerhandler.h"
 #include "simplifytype.h"
 #include "sourceutils.h"
+
 #include "watchdelegatewidgets.h"
 #include "watchutils.h"
 
@@ -29,6 +30,7 @@
 #include <cplusplus/CppDocument.h>
 
 #include <texteditor/syntaxhighlighter.h>
+#include <texteditor/textdocument.h>
 #include <texteditor/texteditor.h>
 
 #include <cppeditor/cppmodelmanager.h>
@@ -68,8 +70,6 @@
 #include <cmath>
 #include <cstring>
 #include <sstream>
-
-#include <ctype.h>
 
 using namespace CPlusPlus;
 using namespace Core;
@@ -999,7 +999,9 @@ static DisplayFormats typeFormatList(const WatchItem *item)
 
     // Types supported by dumpers:
     // Hack: Compensate for namespaces.
-    QString t = stripForFormat(item->type);
+    // For a typedef, the dumper reports the underlying type in formatType so
+    // that formats registered for the base type are offered (QTCREATORBUG-7186).
+    QString t = stripForFormat(item->formatType.isEmpty() ? item->type : item->formatType);
     int pos = t.indexOf("::Q");
     if (pos >= 0 && t.count(':') == 2)
         t.remove(0, pos + 2);

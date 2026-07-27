@@ -3,6 +3,8 @@
 
 #pragma once
 
-namespace CMakeProjectManager::Internal {
-void setupCMakeMcpSupport();
-} // namespace CMakeProjectManager::Internal
+#include <QObject>
+
+namespace DevContainer::Internal {
+QObject *createDevcontainerTest();
+} // namespace DevContainer::Internal

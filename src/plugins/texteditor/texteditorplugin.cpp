@@ -37,7 +37,10 @@
 #ifdef WITH_TESTS
 #include "codeassist/codeassist_test.h"
 #include "codestyleaspect_test.h"
+#include "formattexteditor.h"
 #include "highlighter_test.h"
+#include "snippets/snippet.h"
+#include "textdocumentlayout.h"
 #endif
 
 #include <coreplugin/actionmanager/actioncontainer.h>
@@ -46,10 +49,7 @@
 #include <coreplugin/coreconstants.h>
 #include <coreplugin/dialogs/ioptionspage.h>
 #include <coreplugin/diffservice.h>
-#include <coreplugin/editormanager/editormanager.h>
-#include <coreplugin/editormanager/ieditor.h>
 #include <coreplugin/externaltoolmanager.h>
-#include <coreplugin/foldernavigationwidget.h>
 #include <coreplugin/icore.h>
 
 #include <extensionsystem/pluginmanager.h>
@@ -58,9 +58,7 @@
 #include <utils/async.h>
 #include <utils/fancylineedit.h>
 #include <utils/macroexpander.h>
-#include <utils/qtcassert.h>
 #include <utils/textutils.h>
-#include <utils/utilsicons.h>
 
 #include <QMenu>
 
@@ -315,7 +313,7 @@ void TextEditorPlugin::createStandardContextMenu()
     contextMenu->appendGroup(Constants::G_BOM);
 
     const auto add = [contextMenu](const Id &id, const Id &group) {
-        Command *cmd = ActionManager::command(id);
+        Core::Command *cmd = ActionManager::command(id);
         if (cmd)
             contextMenu->addAction(cmd, group);
     };
@@ -347,13 +345,13 @@ void TextEditorPlugin::createEditorCommands()
 {
     using namespace Core::Constants;
     // Add shortcut for invoking automatic completion
-    Command *command = nullptr;
+    Core::Command *command = nullptr;
     TextActionBuilder(this, Constants::COMPLETE_THIS)
         .setText(Tr::tr("Trigger Completion"))
         .bindCommand(&command)
         .setDefaultKeySequence(Tr::tr("Meta+Space"), Tr::tr("Ctrl+Space"));
 
-    connect(command, &Command::keySequenceChanged, [command] {
+    connect(command, &Core::Command::keySequenceChanged, [command] {
         FancyLineEdit::setCompletionShortcut(command->keySequence());
     });
     FancyLineEdit::setCompletionShortcut(command->keySequence());

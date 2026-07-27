@@ -5,19 +5,16 @@
 
 #include "client.h"
 #include "languageclientmanager.h"
-#include "languageclienttr.h"
 
 #include <coreplugin/actionmanager/command.h>
 #include <coreplugin/editormanager/documentmodel.h>
 
-#include <projectexplorer/project.h>
 #include <projectexplorer/taskhub.h>
 
 #include <texteditor/fontsettings.h>
 #include <texteditor/textdocument.h>
 #include <texteditor/texteditor.h>
 #include <texteditor/textmark.h>
-#include <texteditor/textstyles.h>
 
 #include <utils/stringutils.h>
 #include <utils/utilsicons.h>
@@ -125,8 +122,8 @@ void DiagnosticManager::hideDiagnostics(const Utils::FilePath &filePath)
     if (auto doc = TextDocument::textDocumentForFilePath(filePath)) {
         if (doc == TextDocument::currentTextDocument())
             TaskHub::clearTasks(d->m_taskCategory);
-        for (BaseTextEditor *editor : BaseTextEditor::textEditorsForDocument(doc))
-            editor->editorWidget()->setExtraSelections(d->m_extraSelectionsId, {});
+        for (TextEditorWidget *widget : TextEditorWidget::textEditorWidgetsForDocument(doc))
+            widget->setExtraSelections(d->m_extraSelectionsId, {});
     }
     d->m_marks.remove(filePath);
     d->m_issuePaneEntries.remove(filePath);
@@ -172,8 +169,8 @@ void DiagnosticManager::showDiagnostics(const FilePath &filePath, int version)
                 emit textMarkCreated(filePath);
         }
 
-        for (BaseTextEditor *editor : BaseTextEditor::textEditorsForDocument(doc))
-            editor->editorWidget()->setExtraSelections(d->m_extraSelectionsId, extraSelections);
+        for (TextEditorWidget *widget : TextEditorWidget::textEditorWidgetsForDocument(doc))
+            widget->setExtraSelections(d->m_extraSelectionsId, extraSelections);
 
         if (doc == TextDocument::currentTextDocument())
             d->showTasks(doc);

@@ -8,6 +8,7 @@
 #include "autotesttr.h"
 #include "itemdatacache.h"
 #include "testcodeparser.h"
+#include "testconfiguration.h"
 #include "testframeworkmanager.h"
 #include "testrunner.h"
 #include "testsettings.h"
@@ -17,7 +18,6 @@
 #include "testtreeview.h"
 
 #include <coreplugin/actionmanager/actionmanager.h>
-#include <coreplugin/coreconstants.h>
 #include <coreplugin/editormanager/editormanager.h>
 #include <coreplugin/find/itemviewfind.h>
 #include <coreplugin/inavigationwidgetfactory.h>
@@ -28,12 +28,12 @@
 
 #include <utils/algorithm.h>
 #include <utils/link.h>
-#include <utils/navigationtreeview.h>
 #include <utils/progressindicator.h>
 #include <utils/stylehelper.h>
 #include <utils/utilsicons.h>
 
 #include <QAction>
+#include <QLabel>
 #include <QMenu>
 #include <QTimer>
 #include <QToolButton>
@@ -171,6 +171,8 @@ void TestNavigationWidget::contextMenuEvent(QContextMenuEvent *event)
             && !TestRunner::instance()->isTestRunning()
             && m_model->parser()->state() == TestCodeParser::Idle;
 
+    const bool canDebug = enabled
+            && !TestConfiguration::runsOnAndroid(ProjectExplorer::ProjectManager::startupProject());
     QMenu menu;
     QAction *runThisTest = nullptr;
     QAction *runWithoutDeploy = nullptr;
@@ -198,12 +200,12 @@ void TestNavigationWidget::contextMenuEvent(QContextMenuEvent *event)
                 : nullptr;
         if (ttitem && ttitem->canProvideDebugConfiguration()) {
             debugThisTest = new QAction(Tr::tr("Debug This Test"), &menu);
-            debugThisTest->setEnabled(enabled);
+            debugThisTest->setEnabled(canDebug);
             connect(debugThisTest, &QAction::triggered, this, [this] {
                 onRunThisTestTriggered(TestRunMode::Debug);
             });
             debugWithoutDeploy = new QAction(Tr::tr("Debug Without Deployment"), &menu);
-            debugWithoutDeploy->setEnabled(enabled);
+            debugWithoutDeploy->setEnabled(canDebug);
             connect(debugWithoutDeploy, &QAction::triggered, this, [this] {
                 onRunThisTestTriggered(TestRunMode::DebugWithoutDeploy);
             });

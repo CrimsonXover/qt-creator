@@ -3,7 +3,6 @@
 
 #include "projectsettingswidget.h"
 
-#include "autotestconstants.h"
 #include "autotestplugin.h"
 #include "autotesttr.h"
 #include "testcodeparser.h"
@@ -17,6 +16,7 @@
 #include <utils/layoutbuilder.h>
 #include <utils/qtcassert.h>
 
+#include <QLabel>
 #include <QPushButton>
 #include <QTimer>
 #include <QTreeWidget>

@@ -108,6 +108,8 @@ class Dumper(DumperBase):
         self.isShuttingDown_ = False
         self.isInterrupting_ = False
         self.interpreterBreakpointResolvers = []
+        # Internal (not user-visible) breakpoint ids - see handleBreakpointEvent().
+        self.internalBreakpointIds = set()
 
         self.report('lldbversion=\"%s\"' % lldb.SBDebugger.GetVersionString())
 
@@ -991,6 +993,7 @@ class Dumper(DumperBase):
         if self.nativeMixed:
             self.interpreterEventBreakpoint = \
                 self.target.BreakpointCreateByName('qt_qmlDebugMessageAvailable')
+            self.internalBreakpointIds.add(self.interpreterEventBreakpoint.GetID())
 
         state = 1 if self.target.IsValid() else 0
         self.reportResult('success="%s",msg="%s",exe="%s"'
@@ -1043,6 +1046,21 @@ class Dumper(DumperBase):
             else:
                 self.report('pid="%s"' % self.process.GetProcessID())
                 self.reportState('enginerunandinferiorstopok')
+
+        elif (self.startMode_ == DebuggerStartMode.AttachToRemoteServer
+              or self.startMode_ == DebuggerStartMode.AttachToRemoteProcess) \
+                and not self.platform_:
+            # Plain "target remote"-equivalent: no platform/lldb-server
+            # abstraction, just the raw gdb remote protocol gdbserver speaks.
+            url = "connect://" + self.remoteChannel_
+            self.process = self.target.ConnectRemote(
+                self.debugger.GetListener(), url, "gdb-remote", error)
+            if not error.Success():
+                self.report(self.describeError(error))
+                self.reportState('enginerunfailed')
+                return
+            self.report('pid="%s"' % self.process.GetProcessID())
+            self.reportState('enginerunandinferiorstopok')
 
         elif (self.startMode_ == DebuggerStartMode.AttachToRemoteServer
               or self.startMode_ == DebuggerStartMode.AttachToRemoteProcess):
@@ -1417,6 +1435,15 @@ class Dumper(DumperBase):
     def reportResult(self, result, args):
         self.report('result={token="%s",%s}' % (args.get("token", 0), result))
 
+    def reportInterpreterResult(self, resdict, args):
+        # Overrides DumperBase's plain print() to use report()'s "@" framing.
+        self.report('interpreterresult=%s,token="%s"'
+                    % (self.resultToMi(resdict), args.get('token', -1)))
+
+    def reportInterpreterAsync(self, resdict, asyncclass):
+        self.report('interpreterasync=%s,asyncclass="%s"'
+                    % (self.resultToMi(resdict), asyncclass))
+
     def reportToken(self, args):
         if "token" in args:
             # Unusual syntax intended, to support the double-click in left
@@ -1616,7 +1643,7 @@ class Dumper(DumperBase):
         # handle only the resolved locations for now..
         if eventType & lldb.eBreakpointEventTypeLocationsResolved:
             bp = lldb.SBBreakpoint.GetBreakpointFromEvent(event)
-            if bp is not None:
+            if bp is not None and bp.GetID() not in self.internalBreakpointIds:
                 self.reportBreakpointUpdate(bp)
 
     def wantAutoContinue(self, frame):
@@ -1808,7 +1835,9 @@ class Dumper(DumperBase):
     def createBreakpointAtMain(self):
         # On Android main() lives in a shared object rather than the executable,
         # so do not restrict the breakpoint to the executable's module.
-        return self.target.BreakpointCreateByName('main')
+        bp = self.target.BreakpointCreateByName('main')
+        self.internalBreakpointIds.add(bp.GetID())
+        return bp
 
     def breakpointCallback(self, frame, bp_loc, extra_args, internal_dict):
         command_str = extra_args.GetValueForKey('command').GetStringValue(65536)
@@ -1834,10 +1863,41 @@ class Dumper(DumperBase):
         if result is False:
             d.reportState("continueafternextstop")
         if tracepoint:
-            d.report(f'tracepointhit={{message="{d.hexencode(message)}"}}')
+            d.reportBreakpointUpdate(bp_loc.GetBreakpoint())
+            captures = d.tracepointCaptures(message, frame)
+            d.report(f'tracepointhit={{message="{d.hexencode(message)}",'
+                     f'expressions=[{captures}]}}')
             d.reportState("continueafternextstop")
 
         return True
+
+    def tracepointCaptures(self, message, frame):
+        # Report each "{expr}" as a raw value/encoding pair. The engine
+        # side substitutes it into the message and decodes it via
+        # decodeData() (DebuggerEncoding), the same path GdbEngine uses -
+        # so there is a single source of truth for all the encodings.
+        self.setVariableFetchingOptions({'fancy': 1, 'autoderef': 1})
+        captures = []
+        for expr in re.findall(r'\{([^}]+)\}', message):
+            value, encoding = '', 'notaccessible'
+            native = frame.EvaluateExpression(expr)
+            if native.GetError().Success():
+                try:
+                    # Read currentValue inside the "with" block, before
+                    # __exit__ resets it - takeOutput() would return the
+                    # raw tuple text instead of just the value.
+                    with TopLevelItem(self, expr):
+                        self.putItem(self.fromNativeValue(native))
+                        result = self.currentValue
+                    self.takeOutput()  # discard the tuple text this generated
+                    if result.value is not None:
+                        value = str(result.value)
+                        encoding = result.encoding if result.encoding else ''
+                except Exception:
+                    value, encoding = '', 'notaccessible'
+            captures.append('{expr="%s",value="%s",valueencoded="%s"}'
+                            % (self.hexencode(expr), value, encoding))
+        return ','.join(captures)
 
     def insertBreakpoint(self, args):
         bpType = args['type']
@@ -2037,6 +2097,7 @@ class Dumper(DumperBase):
         if getattr(self, 'nativeCallHookBreakpoint', None) is None:
             self.nativeCallHookBreakpoint = \
                 self.target.BreakpointCreateByName('qt_v4AboutToCallNativeMethodHook')
+            self.internalBreakpointIds.add(self.nativeCallHookBreakpoint.GetID())
         self.parseAndEvaluate('qt_v4NativeCallHookEnabled = 1')
 
     def disarmNativeCallStepIn(self):
@@ -2141,6 +2202,7 @@ class Dumper(DumperBase):
         if addr == 0:
             return False
         bp = self.target.BreakpointCreateByAddress(addr)
+        self.internalBreakpointIds.add(bp.GetID())
         bp.SetThreadID(thread.GetThreadID())
         self.process.Continue()
         landed = self.waitForNativeStop()
@@ -2196,27 +2258,59 @@ class Dumper(DumperBase):
 
     def executeRunToLocation(self, args):
         self.reportToken(args)
+        frame = self.currentFrame()
         addr = args.get('address', 0)
         if addr:
             # Does not seem to hit anything on Linux:
             # self.currentThread().RunToAddress(addr)
             bp = self.target.BreakpointCreateByAddress(addr)
+            self.internalBreakpointIds.add(bp.GetID())
             if bp.GetNumLocations() == 0:
                 self.target.BreakpointDelete(bp.GetID())
                 self.reportResult(self.describeStatus('No target location found.')
                                   + self.describeLocation(frame), args)
+                self.reportState('inferiorrunfailed')
                 return
             bp.SetOneShot(True)
             self.reportResult('', args)
             self.process.Continue()
         else:
-            frame = self.currentFrame()
             file = args['file']
             line = int(args['line'])
             error = self.currentThread().StepOverUntil(frame, lldb.SBFileSpec(file), line)
-            self.reportResult(self.describeError(error), args)
-            self.reportState('running')
-            self.reportState('stopped')
+            if error.Success():
+                self.reportResult('', args)
+                self.reportState('running')
+                self.reportState('stopped')
+            else:
+                # Target line is outside the current function - fall back
+                # to a one-shot breakpoint, like the address branch above.
+                bp = self.target.BreakpointCreateByLocation(str(file), line)
+                self.internalBreakpointIds.add(bp.GetID())
+                if bp.GetNumLocations() == 0:
+                    self.target.BreakpointDelete(bp.GetID())
+                    self.reportResult(self.describeStatus('No target location found.')
+                                      + self.describeLocation(frame), args)
+                    self.reportState('inferiorrunfailed')
+                    return
+                bp.SetOneShot(True)
+                self.reportResult('', args)
+                self.process.Continue()
+
+    def executeRunToFunction(self, args):
+        self.reportToken(args)
+        frame = self.currentFrame()
+        bp = self.target.BreakpointCreateByName(str(args['function']))
+        self.internalBreakpointIds.add(bp.GetID())
+        if bp.GetNumLocations() == 0:
+            self.target.BreakpointDelete(bp.GetID())
+            self.reportResult(self.describeStatus('No target location found.')
+                              + self.describeLocation(frame), args)
+            self.reportState('inferiorrunfailed')
+            return
+        bp.SetOneShot(True)
+        self.reportResult('', args)
+        self.process.Continue()
 
     def executeJumpToLocation(self, args):
         self.reportToken(args)
@@ -2230,6 +2324,7 @@ class Dumper(DumperBase):
         else:
             bp = self.target.BreakpointCreateByLocation(
                 str(args['file']), int(args['line']))
+        self.internalBreakpointIds.add(bp.GetID())
         if bp.GetNumLocations() == 0:
             self.target.BreakpointDelete(bp.GetID())
             status = 'No target location found.'
@@ -2425,6 +2520,7 @@ class Dumper(DumperBase):
     def createResolvePendingBreakpointsHookBreakpoint(self, args):
         bp = self.target.BreakpointCreateByName('qt_qmlDebugConnectorOpen')
         bp.SetOneShot(True)
+        self.internalBreakpointIds.add(bp.GetID())
         self.interpreterBreakpointResolvers.append(
             lambda: self.resolvePendingInterpreterBreakpoint(args))
 
@@ -2492,6 +2588,10 @@ class Tester(Dumper):
                             self.process.SetSelectedThread(stoppedThread)
                             self.fakeAddress_ = frame.GetPC()
                             self.fakeLAddress_ = frame.GetPCAddress()
+                            if 'memwrite' in args:
+                                mw = args['memwrite']
+                                address = frame.FindVariable(mw['exp']).GetLoadAddress()
+                                self.writeMemory({'address': address, 'data': mw['data']})
                             self.fetchVariables(args)
                             #self.describeLocation(frame)
                             self.report('@NS@%s@' % self.qtNamespace())

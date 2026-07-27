@@ -1,6 +1,8 @@
 // Copyright (C) 2020 The Qt Company Ltd.
 // SPDX-License-Identifier: LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0
 
+#include "mcusupportplugin.h"
+
 #include "mcubuildstep.h"
 #include "mcukitmanager.h"
 #include "mculegacyconstants.h"
@@ -38,7 +40,6 @@
 #include <qmljs/qmljsmodelmanagerinterface.h>
 #include <qmljstools/qmljstoolsconstants.h>
 
-#include <utils/expected.h>
 #include <utils/filepath.h>
 #include <utils/infobar.h>
 

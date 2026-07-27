@@ -1200,7 +1200,7 @@ void GitPluginPrivate::logSelection()
     lines.append("--no-patch");
 
     qCDebug(log) << "logSelection" << lines;
-    gitClient().log(state.currentFileTopLevel(), {}, true, lines);
+    gitClient().log(state.currentFileTopLevel(), state.relativeCurrentFile(), true, lines);
 }
 
 void GitPluginPrivate::blameFile()
@@ -2776,6 +2776,11 @@ class GITSHARED_EXPORT GitPlugin final : public ExtensionSystem::IPlugin
 void cherryPickCommits(const QString &branch)
 {
     dd->cherryPickCommits(branch);
+}
+
+void repeatInstantBlame()
+{
+    dd->m_instantBlame.repeat();
 }
 
 } // Git::Internal

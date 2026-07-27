@@ -20,16 +20,15 @@
 #include <coreplugin/dialogs/ioptionspage.h>
 #include <coreplugin/helplink.h>
 #include <coreplugin/helpmanager.h>
-#include <coreplugin/icore.h>
 
 #include <utils/algorithm.h>
 #include <utils/appinfo.h>
 #include <utils/environment.h>
 #include <utils/fileutils.h>
 #include <utils/hostosinfo.h>
+#include <utils/infolabel.h>
 #include <utils/layoutbuilder.h>
 #include <utils/mimeconstants.h>
-#include <utils/qtcassert.h>
 #include <utils/stringutils.h>
 
 #ifdef QTC_WEBENGINE_HELPVIEWER

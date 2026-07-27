@@ -6,6 +6,8 @@
  * All test are based on Vim behaviour.
  */
 
+#include "fakevim_test.h"
+
 #include "fakevimhandler.h"
 #include "fakevimactions.h"
 
@@ -15,6 +17,7 @@
 #include <texteditor/texteditor.h>
 
 #include <utils/multitextcursor.h>
+#include <utils/stringutils.h>
 
 #include <QApplication>
 #include <QFocusEvent>
@@ -190,7 +193,16 @@ private slots:
     void test_vim_tab_with_zero_tabstop();
     void test_vim_timeout_options();
     void test_vim_selection_for_shortcut();
+    void test_vim_shortcut_override_text_key();
     void test_vim_jumplist_across_files();
+    void test_vim_control_modifier();
+    void test_vim_tabstop_distance();
+    void test_vim_goto_definition();
+    void test_vim_ex_plugin_command_moves_cursor();
+    void test_vim_dot_after_visual_paste();
+    void test_vim_use_editor_tab_settings();
+    void test_vim_command_line_paste();
+    void test_vim_tab_out();
     void test_vim_iso_level5_shift();
 
     void test_macros();
@@ -212,8 +224,6 @@ private:
     struct TestData;
     void setup(TestData *data);
 };
-
-using SetupTestCallback =  void (*)(QString *, FakeVimHandler **, QWidget **);
 
 static SetupTestCallback setupTest = nullptr;
 
@@ -5331,6 +5341,39 @@ void FakeVimTester::test_vim_selection_for_shortcut()
     useFakeVim.setValue(savedUseFakeVim);
 }
 
+void FakeVimTester::test_vim_shortcut_override_text_key()
+{
+    // Route the ShortcutOverride through the filter as the application does.
+    FvBoolAspect &useFakeVim = FakeVim::Internal::settings().useFakeVim;
+    const bool savedUseFakeVim = useFakeVim.value();
+    useFakeVim.setValue(true);
+
+    TestData data;
+    setup(&data);
+    data.editor()->setFocus();
+    if (!data.editor()->hasFocus()) {
+        useFakeVim.setValue(savedUseFakeVim);
+        QSKIP("Editor did not get keyboard focus");
+    }
+    data.setText("|abc");
+
+    // A plain text key must be claimed as input (accepted) so it is delivered
+    // as a key press rather than eaten by the shortcut machinery; this is what
+    // lets layout-modifier characters through (QTCREATORBUG-24904).
+    QKeyEvent textKey(QEvent::ShortcutOverride, Qt::Key_X, Qt::NoModifier, QString("x"));
+    textKey.setAccepted(false);
+    data.handler->eventFilter(data.editor(), &textKey);
+    QVERIFY(textKey.isAccepted());
+
+    // A function key is a genuine shortcut and must be left unaccepted.
+    QKeyEvent functionKey(QEvent::ShortcutOverride, Qt::Key_F5, Qt::NoModifier, QString());
+    functionKey.setAccepted(false);
+    data.handler->eventFilter(data.editor(), &functionKey);
+    QVERIFY(!functionKey.isAccepted());
+
+    useFakeVim.setValue(savedUseFakeVim);
+}
+
 void FakeVimTester::test_vim_jumplist_across_files()
 {
     TestData data;
@@ -5350,6 +5393,168 @@ void FakeVimTester::test_vim_jumplist_across_files()
     distance = 0;
     data.doKeys("100<c-i>");
     QVERIFY(distance > 0);
+}
+
+void FakeVimTester::test_vim_control_modifier()
+{
+    // A key with the Control modifier (and no Alt) must not be taken as the
+    // plain letter command; such keys are left for a Qt Creator shortcut
+    // (QTCREATORBUG-14369). Ctrl-Shift-X must not act like "X" (delete the
+    // character before the cursor).
+    TestData data;
+    setup(&data);
+    data.setText("ab|c");
+    KEYS("<C-S-X>", "ab|c"); // no-op
+    KEYS("<C-X>", "ab|c");   // no-op
+    KEYS("X", "a|c");        // plain X deletes the character before the cursor
+}
+
+void FakeVimTester::test_vim_tabstop_distance()
+{
+    // FakeVim renders a tab as tabstop space-widths, so that tab-, space- and
+    // autoindent-indented lines line up (QTCREATORBUG-10367).
+    auto &tabStop = FakeVim::Internal::settings().tabStop;
+    const qint64 savedTabStop = tabStop.value();
+
+    TestData data;
+    setup(&data);
+    const int spaceWidth = data.editor()->fontMetrics().horizontalAdvance(' ');
+
+    tabStop.setValue(4);
+    data.handler->setupWidget(); // re-applies the visual tab width
+    QCOMPARE(int(data.editor()->tabStopDistance()), spaceWidth * 4);
+
+    tabStop.setValue(8);
+    data.handler->setupWidget();
+    QCOMPARE(int(data.editor()->tabStopDistance()), spaceWidth * 8);
+
+    tabStop.setValue(savedTabStop);
+}
+
+void FakeVimTester::test_vim_goto_definition()
+{
+    // "gd" requests Follow Symbol natively, without an ex-command mapping
+    // (QTCREATORBUG-27191).
+    TestData data;
+    setup(&data);
+    data.setText("abc" N "d|ef");
+    bool requested = false;
+    data.handler->tagJumpRequested.set([&] { requested = true; });
+    data.doKeys("gd");
+    QVERIFY(requested);
+}
+
+void FakeVimTester::test_vim_ex_plugin_command_moves_cursor()
+{
+    // An Ex command mapped to a Qt Creator action that moves the cursor
+    // synchronously must keep that new position; FakeVim must not revert it
+    // to where the cursor was before the command (QTCREATORBUG-27191).
+    TestData data;
+    setup(&data);
+    data.setText("|abc" N "def" N "ghi");
+    const int target = data.text().indexOf('g');
+    data.handler->handleExCommandRequested.set(
+        [&](bool *handled, const ExCommand &) {
+            QTextCursor tc = data.editor()->textCursor();
+            tc.setPosition(target);
+            data.editor()->setTextCursor(tc);
+            *handled = true;
+        });
+    data.doKeys(":foo<CR>");
+    QCOMPARE(data.position(), target);
+}
+
+void FakeVimTester::test_vim_dot_after_visual_paste()
+{
+    TestData data;
+    setup(&data);
+
+    // QTCREATORBUG-18298: as in Vim, redo of a paste over a visual selection
+    // only repeats the deletion of the (re-selected) region; the put text is
+    // not recorded, so "." leaves nothing behind.
+    data.setText("(bl|ubb)" N "(abc)" N "(xyz)");
+    KEYS("yi(", "(blubb)" N "(abc)" N "(xyz)");
+    KEYS("2G0lvi(p", "(blubb)" N "(blubb)" N "(xyz)");
+    KEYS("3G0l.", "(blubb)" N "(blubb)" N "()");
+
+    // Same for a line-wise selection.
+    data.setText("|AAA" N "BBB" N "CCC" N "DDD");
+    KEYS("yy", "AAA" N "BBB" N "CCC" N "DDD");
+    KEYS("2GVp", "AAA" N "AAA" N "CCC" N "DDD");
+    KEYS("3G.", "AAA" N "AAA" N "DDD");
+}
+
+void FakeVimTester::test_vim_use_editor_tab_settings()
+{
+    // With useEditorTabSettings on, indentation follows the editor tab
+    // settings (delivered through tabSettingsRequested) instead of the FakeVim
+    // ones (QTCREATORBUG-14273).
+    auto &sw = FakeVim::Internal::settings().shiftWidth;
+    auto &et = FakeVim::Internal::settings().expandTab;
+    auto &useEditor = FakeVim::Internal::settings().useEditorTabSettings;
+    const qint64 savedSw = sw.value();
+    const bool savedEt = et.value();
+    const bool savedUseEditor = useEditor.value();
+
+    // FakeVim own settings: 8 wide, real tabs.
+    sw.setValue(8);
+    et.setValue(false);
+
+    TestData data;
+    setup(&data);
+    // Editor settings served to the handler: 2 wide, spaces.
+    data.handler->tabSettingsRequested.set(
+        [](int *tabSize, int *indentSize, bool *spacesForTabs) {
+            *tabSize = 2;
+            *indentSize = 2;
+            *spacesForTabs = true;
+        });
+
+    // Off: uses the FakeVim settings (one tab).
+    useEditor.setValue(false);
+    data.setText("a|bc");
+    KEYS(">>", "\t|abc");
+
+    // On: follows the editor (two spaces).
+    useEditor.setValue(true);
+    data.setText("a|bc");
+    KEYS(">>", "  |abc");
+
+    sw.setValue(savedSw);
+    et.setValue(savedEt);
+    useEditor.setValue(savedUseEditor);
+}
+
+void FakeVimTester::test_vim_command_line_paste()
+{
+    // Ctrl-V pastes the clipboard into the command line, OS style, in addition
+    // to the Vim way with Ctrl-R (QTCREATORBUG-23785).
+    TestData data;
+    setup(&data);
+    data.setText("|abc" N "def" N "ghi");
+    Utils::setClipboardAndSelection("ghi");
+    // Paste the search term into the / command line, then run the search.
+    data.doKeys("/<c-v><CR>");
+    QCOMPARE(data.cursor().blockNumber(), 2);
+}
+
+void FakeVimTester::test_vim_tab_out()
+{
+    // With tabOut set, TAB in insert mode jumps over the next listed closing
+    // character instead of inserting a tab (QTCREATORBUG-27441).
+    auto &tabOut = FakeVim::Internal::settings().tabOut;
+    const QString saved = tabOut.value();
+    tabOut.setValue(")]}");
+
+    TestData data;
+    setup(&data);
+    data.setText("foo(|)");
+    KEYS("i<tab>", "foo()|");
+    // Repeated tabs jump over successive closers.
+    data.setText("(|))");
+    KEYS("i<tab><tab>", "())|");
+
+    tabOut.setValue(saved);
 }
 
 void FakeVimTester::test_vim_iso_level5_shift()

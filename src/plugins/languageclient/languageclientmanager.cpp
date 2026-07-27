@@ -9,14 +9,10 @@
 
 #include <coreplugin/editormanager/editormanager.h>
 #include <coreplugin/editormanager/ieditor.h>
-#include <coreplugin/find/searchresultwindow.h>
 #include <coreplugin/icore.h>
 #include <coreplugin/navigationwidget.h>
 
 #include <extensionsystem/pluginmanager.h>
-
-#include <languageserverprotocol/messages.h>
-#include <languageserverprotocol/progresssupport.h>
 
 #include <projectexplorer/buildconfiguration.h>
 #include <projectexplorer/project.h>
@@ -29,9 +25,7 @@
 #include <texteditor/textmark.h>
 
 #include <utils/algorithm.h>
-#include <utils/theme/theme.h>
 #include <utils/shutdownguard.h>
-#include <utils/utilsicons.h>
 
 #include <QTimer>
 
@@ -557,59 +551,57 @@ void LanguageClientManager::editorOpened(Core::IEditor *editor)
     using namespace TextEditor;
     using namespace Core;
 
-    if (auto *textEditor = qobject_cast<BaseTextEditor *>(editor)) {
-        if (TextEditorWidget *widget = textEditor->editorWidget()) {
-            connect(widget, &TextEditorWidget::requestLinkAt, this,
-                    [document = textEditor->textDocument()]
-                    (const QTextCursor &cursor, const Utils::LinkHandler &callback, bool resolveTarget) {
-                        if (auto client = clientForDocument(document)) {
-                            client->findLinkAt(document,
-                                               cursor,
-                                               callback,
-                                               resolveTarget,
-                                               LinkTarget::SymbolDef);
-                        }
-                    });
-            connect(widget, &TextEditorWidget::requestTypeAt, this,
-                    [document = textEditor->textDocument()]
-                    (const QTextCursor &cursor, const Utils::LinkHandler &callback, bool resolveTarget) {
-                        if (auto client = clientForDocument(document)) {
-                            client->findLinkAt(document,
-                                               cursor,
-                                               callback,
-                                               resolveTarget,
-                                               LinkTarget::SymbolTypeDef);
-                        }
-                    });
-            connect(widget, &TextEditorWidget::requestUsages, this,
-                    [document = textEditor->textDocument()](const QTextCursor &cursor) {
-                        if (auto client = clientForDocument(document))
-                            client->symbolSupport().findUsages(document, cursor);
-                    });
-            connect(widget, &TextEditorWidget::requestRename, this,
-                    [document = textEditor->textDocument()](const QTextCursor &cursor) {
-                        if (auto client = clientForDocument(document))
-                            client->symbolSupport().renameSymbol(document, cursor);
-                    });
-            connect(widget, &TextEditorWidget::requestCallHierarchy, this,
-                    [this, document = textEditor->textDocument()]() {
-                        if (clientForDocument(document)) {
-                            emit openCallHierarchy();
-                            NavigationWidget::activateSubWidget(Constants::CALL_HIERARCHY_FACTORY_ID,
-                                                                Side::Left);
-                        }
-                    });
-            connect(widget, &TextEditorWidget::cursorPositionChanged, this, [widget]() {
-                if (Client *client = clientForDocument(widget->textDocument()))
-                    if (client->reachable())
-                        client->cursorPositionChanged(widget);
-            });
-            if (TextEditor::TextDocument *document = textEditor->textDocument()) {
-                if (Client *client = m_clientForDocument[document])
-                    client->activateEditor(editor);
-                else
-                    autoSetupLanguageServer(document);
-            }
+    if (TextEditorWidget *widget = TextEditorWidget::fromEditor(editor)) {
+        connect(widget, &TextEditorWidget::requestLinkAt, this,
+                [document = widget->textDocument()]
+                (const QTextCursor &cursor, const Utils::LinkHandler &callback, bool resolveTarget) {
+                    if (auto client = clientForDocument(document)) {
+                        client->findLinkAt(document,
+                                           cursor,
+                                           callback,
+                                           resolveTarget,
+                                           LinkTarget::SymbolDef);
+                    }
+                });
+        connect(widget, &TextEditorWidget::requestTypeAt, this,
+                [document = widget->textDocument()]
+                (const QTextCursor &cursor, const Utils::LinkHandler &callback, bool resolveTarget) {
+                    if (auto client = clientForDocument(document)) {
+                        client->findLinkAt(document,
+                                           cursor,
+                                           callback,
+                                           resolveTarget,
+                                           LinkTarget::SymbolTypeDef);
+                    }
+                });
+        connect(widget, &TextEditorWidget::requestUsages, this,
+                [document = widget->textDocument()](const QTextCursor &cursor) {
+                    if (auto client = clientForDocument(document))
+                        client->symbolSupport().findUsages(document, cursor);
+                });
+        connect(widget, &TextEditorWidget::requestRename, this,
+                [document = widget->textDocument()](const QTextCursor &cursor) {
+                    if (auto client = clientForDocument(document))
+                        client->symbolSupport().renameSymbol(document, cursor);
+                });
+        connect(widget, &TextEditorWidget::requestCallHierarchy, this,
+                [this, document = widget->textDocument()]() {
+                    if (clientForDocument(document)) {
+                        emit openCallHierarchy();
+                        NavigationWidget::activateSubWidget(Constants::CALL_HIERARCHY_FACTORY_ID,
+                                                            Side::Left);
+                    }
+                });
+        connect(widget, &TextEditorWidget::cursorPositionChanged, this, [widget]() {
+            if (Client *client = clientForDocument(widget->textDocument()))
+                if (client->reachable())
+                    client->cursorPositionChanged(widget);
+        });
+        if (TextEditor::TextDocument *document = widget->textDocument()) {
+            if (Client *client = m_clientForDocument[document])
+                client->activateEditor(editor);
+            else
+                autoSetupLanguageServer(document);
         }
     }
 }

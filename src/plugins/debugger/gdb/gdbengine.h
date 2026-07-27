@@ -9,8 +9,6 @@
 #include <debugger/registerhandler.h>
 #include <debugger/peripheralregisterhandler.h>
 #include <debugger/watchhandler.h>
-#include <debugger/watchutils.h>
-#include <debugger/debuggeritem.h>
 #include <debugger/debuggertooltipmanager.h>
 #include <debugger/outputcollector.h>
 
@@ -112,6 +110,7 @@ private: ////////// General Interface //////////
     QHash<int, DebuggerCommand> m_commandForToken;
     QTimer m_commandTimer;
     bool m_commandTimeoutPending = false;
+    bool m_debuginfodDownloadInProgress = false;
 
     QString m_pendingConsoleStreamOutput;
     QString m_pendingLogStreamOutput;

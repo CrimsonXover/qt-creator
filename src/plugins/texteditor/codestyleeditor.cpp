@@ -17,23 +17,17 @@
 #include <coreplugin/icore.h>
 #include <utils/filepath.h>
 #include <utils/guiutils.h>
+#include <utils/infolabel.h>
 #include <utils/layoutbuilder.h>
 
 #include <QChar>
 #include <QFont>
 #include <QLabel>
 #include <QTextBlock>
-#include <QVBoxLayout>
 
 using namespace Utils;
 
 namespace TextEditor {
-
-CodeStyleEditor::CodeStyleEditor()
-{
-    m_layout = new QVBoxLayout{this};
-    m_layout->setContentsMargins(0, 0, 0, 0);
-}
 
 void CodeStyleEditor::apply() {}
 
@@ -42,77 +36,6 @@ void CodeStyleEditor::cancel() {}
 bool CodeStyleEditor::isDirty() const
 {
     return false;
-}
-
-void CodeStyleEditor::addSelector(CodeStyleSelectorWidget *selector)
-{
-    m_layout->addWidget(selector);
-    Utils::installMarkSettingsDirtyTriggerRecursively(selector);
-}
-
-void CodeStyleEditor::addHeaderWidget(QWidget *widget)
-{
-    m_layout->insertWidget(0, widget);
-}
-
-void CodeStyleEditor::addEditorWidget(QWidget *editor)
-{
-    m_layout->addWidget(editor);
-}
-
-QWidget *CodeStyleEditor::addExpandingFiller()
-{
-    auto filler = new QWidget;
-    filler->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
-    m_layout->addWidget(filler);
-    return filler;
-}
-
-QWidget *CodeStyleEditor::setupPreview(SnippetEditorWidget *preview, Indenter *indenter,
-                                       const FilePath &projectFile, ICodeStylePreferences *codeStyle)
-{
-    indenter->setOverriddenPreferences(codeStyle);
-    const FilePath fileName = !projectFile.isEmpty()
-        ? projectFile.pathAppended("snippet.cpp")
-        : Core::ICore::userResourcePath("snippet.cpp");
-    indenter->setFileName(fileName);
-    preview->textDocument()->setIndenter(indenter);
-
-    const auto updatePreview = [preview, codeStyle]() {
-        QTextDocument *doc = preview->document();
-
-        preview->textDocument()->indenter()->invalidateCache();
-
-        QTextBlock block = doc->firstBlock();
-        QTextCursor tc = preview->textCursor();
-        tc.beginEditBlock();
-        while (block.isValid()) {
-            preview->textDocument()
-                ->indenter()
-                ->indentBlock(block, QChar::Null, codeStyle->currentTabSettings());
-            block = block.next();
-        }
-        tc.endEditBlock();
-    };
-
-    connect(codeStyle, &ICodeStylePreferences::currentTabSettingsChanged, this, updatePreview);
-    connect(codeStyle, &ICodeStylePreferences::currentValueChanged, this, updatePreview);
-    connect(codeStyle, &ICodeStylePreferences::currentPreferencesChanged, this, updatePreview);
-
-    updatePreview();
-
-    m_layout->addWidget(preview);
-
-    QLabel *label = new QLabel(
-        Tr::tr("Edit preview contents to see how the current settings "
-               "are applied to custom code snippets. Changes in the preview "
-               "do not affect the current settings."));
-    QFont font = label->font();
-    font.setItalic(true);
-    label->setFont(font);
-    label->setWordWrap(true);
-    m_layout->addWidget(label);
-    return label;
 }
 
 // The default per-project code style editor: a style selector above a live
@@ -215,13 +138,11 @@ QWidget *createTakeEffectImmediatelyLabel()
     auto infoLabel = new InfoLabel(Tr::tr("All changes below take effect immediately."),
                                    InfoLabelType::Information);
     infoLabel->setFilled(true);
-    // Wrap in a plain container: InfoLabel uses its own contentsMargins to place
-    // its icon, so callers indent the container instead of the label itself.
-    auto container = new QWidget;
-    auto layout = new QVBoxLayout(container);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->addWidget(infoLabel);
-    return container;
+
+    // Wrap in a plain container so callers indent the container, not the label
+    // itself (InfoLabel uses its own contentsMargins to place its icon).
+    using namespace Layouting;
+    return Column { infoLabel, noMargin }.emerge();
 }
 
 CodeStyleAspect::CodeStyleAspect(ICodeStylePreferences *codeStyle, Id languageId)
@@ -235,28 +156,36 @@ CodeStyleAspect::CodeStyleAspect(ICodeStylePreferences *codeStyle, Id languageId
 
         using namespace Layouting;
 
-        if (QWidget *valueEditor = factory->createValueEditor(m_pageCodeStyle)) {
-            // The language supplies only its value editor; the common selector
-            // and preview are built here. Edits go live into the page-local
-            // copy, and dirtiness/apply/cancel are handled by this aspect
-            // against the real style.
-            auto selector = new CodeStyleSelectorWidget({});
-            selector->setCodeStyle(m_pageCodeStyle);
-            Utils::installMarkSettingsDirtyTriggerRecursively(selector);
+        QWidget *valueEditor = factory->createValueEditor(m_pageCodeStyle);
 
-            if (factory->valueEditorHasPreview())
-                return Column { selector, valueEditor };
-            return Column {
-                selector,
-                valueEditor,
-                createCodeStylePreview(factory, {}, m_pageCodeStyle),
-                createCodeStylePreviewNote(),
-            };
+        // A self-managed editor lays out its own selector and manages its own
+        // deferred apply/cancel (e.g. ClangFormat, whose settings live outside
+        // the preferences). Route its contract and show it as it is.
+        if (auto selfManaged = qobject_cast<CodeStyleEditor *>(valueEditor)) {
+            m_editor = selfManaged;
+            connect(m_editor, &CodeStyleEditor::changed,
+                    this, [this] { emit volatileValueChanged(); });
+            return Column { valueEditor };
         }
 
-        m_editor = factory->createSettingsEditor(m_pageCodeStyle);
-        connect(m_editor, &CodeStyleEditor::changed, this, [this] { emit volatileValueChanged(); });
-        return Column { m_editor.data() };
+        // A plain value editor edits the page-local copy live; build the common
+        // selector and preview around it and let this aspect own the deferral.
+        auto selector = new CodeStyleSelectorWidget({});
+        selector->setCodeStyle(m_pageCodeStyle);
+        Utils::installMarkSettingsDirtyTriggerRecursively(selector);
+
+        if (factory->valueEditorHasPreview())
+            return Column { selector, valueEditor };
+        return Column {
+            selector,
+            Row {
+                Column { valueEditor, st },
+                Column {
+                    createCodeStylePreview(factory, {}, m_pageCodeStyle),
+                    createCodeStylePreviewNote(),
+                },
+            },
+        };
     });
 }
 

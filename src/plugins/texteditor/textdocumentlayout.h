@@ -171,7 +171,7 @@ public:
     {
     public:
         void setup(TextDocumentLayout *layout);
-        void reset();
+        void reset(const QTextBlock &firstBlock = {});
         void process(QTextBlock block);
         void finalize();
 
@@ -217,5 +217,7 @@ signals:
     void foldChanged(const int blockNumber, bool folded);
     void parenthesesChanged(const QTextBlock block);
 };
+
+namespace Internal { QObject *createTextDocumentTest(); }
 
 } // namespace TextEditor

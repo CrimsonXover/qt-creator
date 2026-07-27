@@ -28,6 +28,7 @@ public:
     QString subject;
     QStringList oldLines;     ///< the previous line contents
     QString newLine;          ///< the new line contents
+    Utils::FilePath topLevel; ///< repository top level path
     Utils::FilePath filePath; ///< absolute file path for current file
     QString originalFileName; ///< relative file path from project root for the original file
     int line = -1;            ///< current line number in current file
@@ -40,9 +41,6 @@ public:
 class BlameMark : public TextEditor::TextMark
 {
 public:
-    BlameMark(const Utils::FilePath &fileName, int lineNumber, const CommitInfo &info);
-    // for documents without a file path, e.g. the baseline view of the
-    // inline diff editor
     BlameMark(TextEditor::TextDocument *document, int lineNumber, const CommitInfo &info);
     bool addToolTipContent(QLayout *target) const final;
     QString toolTipText(const CommitInfo &info) const;
@@ -92,6 +90,7 @@ public:
     InstantBlame();
 
     void setup();
+    void repeat();
     void once();
 
 private:

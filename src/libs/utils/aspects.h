@@ -5,7 +5,6 @@
 
 #include "filepath.h"
 #include "id.h"
-#include "infolabel.h"
 #include "pathchooser.h"
 
 #include <QFontComboBox>
@@ -22,6 +21,7 @@ class QAbstractButton;
 class QAbstractSpinBox;
 class QAction;
 class QComboBox;
+class QLabel;
 class QSettings;
 class QUndoStack;
 class QStandardItem;
@@ -38,6 +38,8 @@ class BoolAspect;
 class CheckableDecider;
 class Key;
 class MacroExpander;
+
+enum class InfoLabelType;
 
 using Store = QMap<Key, QVariant>; // TODO: storefwd.h? utils_fwd.h?
 
@@ -1055,7 +1057,7 @@ public:
 
     void addToLayoutImpl(Layouting::Layout &parent) override;
 
-    void setIconType(InfoLabelType t);
+    void setIconType(const InfoLabelType &t);
     void setText(const QString &message);
     void setWordWrap(bool on);
 
@@ -1167,6 +1169,14 @@ public:
 
     void setLayouter(const std::function<Layouting::Layout()> &layouter);
     std::function<Layouting::Layout()> layouter() const;
+
+#ifdef WITH_TESTS
+    // Registry of all live AspectContainer instances, for settings
+    // introspection from tests and tooling (e.g. the MCP server). Lets a walker
+    // reach per-instance containers - run/build configs, kits, devices - that
+    // are not exposed as Core::IOptionsPages.
+    static const QList<AspectContainer *> &registeredContainers();
+#endif
 
 signals:
     void applied();

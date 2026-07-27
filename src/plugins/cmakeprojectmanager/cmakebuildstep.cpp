@@ -31,7 +31,6 @@
 #include <projectexplorer/processparameters.h>
 #include <projectexplorer/project.h>
 #include <projectexplorer/projectexplorerconstants.h>
-#include <projectexplorer/projectexplorersettings.h>
 #include <projectexplorer/runconfiguration.h>
 #include <projectexplorer/target.h>
 #include <projectexplorer/toolchainkitaspect.h>
@@ -45,6 +44,7 @@
 #include <QRegularExpression>
 #include <QTreeView>
 #include <QCheckBox>
+#include <QLabel>
 
 using namespace Core;
 using namespace ProjectExplorer;
@@ -349,8 +349,6 @@ void CMakeBuildStep::setupOutputFormatter(Utils::OutputFormatter *formatter)
     CMakeProgressParser * const progressParser = new CMakeProgressParser(cbs->cmakeGenerator());
     connect(progressParser, &CMakeProgressParser::progress, this, &CMakeBuildStep::progress);
     formatter->addLineParser(progressParser);
-    cmakeOutputParser->setSourceDirectories(
-        {project()->projectDirectory(), buildConfiguration()->buildDirectory()});
     formatter->addLineParsers({new CMakeAutogenParser, cmakeOutputParser, new GnuMakeParser});
     Toolchain *tc = ToolchainKitAspect::cxxToolchain(kit());
     OutputTaskParser *xcodeBuildParser = nullptr;
@@ -363,6 +361,10 @@ void CMakeBuildStep::setupOutputFormatter(Utils::OutputFormatter *formatter)
     for (Utils::OutputLineParser * const p : additionalParsers)
         p->setRedirectionDetector(progressParser);
     formatter->addLineParsers(additionalParsers);
+    // Both only reach parsers already registered with the formatter, so they
+    // have to come after every addLineParser() call above.
+    cmakeOutputParser->setSourceDirectories(
+        {project()->projectDirectory(), buildConfiguration()->buildDirectory()});
     formatter->addSearchDir(processParameters()->effectiveWorkingDirectory());
     CMakeAbstractProcessStep::setupOutputFormatter(formatter);
 }

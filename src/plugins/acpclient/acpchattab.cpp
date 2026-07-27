@@ -17,11 +17,8 @@
 #include <projectexplorer/project.h>
 #include <projectexplorer/projectmanager.h>
 
-#include <texteditor/texteditor.h>
-
 #include <utils/async.h>
 #include <utils/utilsicons.h>
-#include <utils/fileutils.h>
 #include <utils/infolabel.h>
 #include <utils/progressindicator.h>
 #include <utils/qtdesignwidgets.h>
@@ -502,6 +499,11 @@ void AcpChatTab::setFocus()
 QString AcpChatTab::title() const
 {
     return m_controller->displayName();
+}
+
+QWidget *AcpChatTab::toolBarWidget() const
+{
+    return m_chatPanel->toolBarWidget();
 }
 
 static IDocument *currentNonTemporaryDocument()

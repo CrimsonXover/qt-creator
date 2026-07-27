@@ -14,15 +14,12 @@
 #include "mergetool.h"
 #include "temporarypatchfile.h"
 
-#include <coreplugin/coreconstants.h>
 #include <coreplugin/editormanager/editormanager.h>
 #include <coreplugin/generatedfile.h>
 #include <coreplugin/icore.h>
 #include <coreplugin/idocument.h>
 #include <coreplugin/iversioncontrol.h>
 #include <coreplugin/vcsmanager.h>
-
-#include <diffeditor/diffeditorconstants.h>
 
 #include <QtTaskTree/QConditional>
 
@@ -31,7 +28,6 @@
 #include <texteditor/texteditor.h>
 
 #include <utils/ansiescapecodehandler.h>
-#include <utils/async.h>
 #include <utils/algorithm.h>
 #include <utils/checkablemessagebox.h>
 #include <utils/commandline.h>
@@ -69,16 +65,17 @@
 #include <QTimer>
 #include <QToolBar>
 
-const char HEAD[] = "HEAD";
-const char CHERRY_PICK_HEAD[] = "CHERRY_PICK_HEAD";
-const char BRANCHES_PREFIX[] = "Branches: ";
-const char stashNamePrefix[] = "stash@{";
-const char noColorOption[] = "--no-color";
-const char colorOption[] = "--color=always";
-const char patchOption[] = "--patch";
-const char graphOption[] = "--graph";
-const char decorateOption[] = "--decorate";
-const char allBranchesOption[] = "--all";
+static const char HEAD[] = "HEAD";
+static const char CHERRY_PICK_HEAD[] = "CHERRY_PICK_HEAD";
+static const char BRANCHES_PREFIX[] = "Branches: ";
+static const char stashNamePrefix[] = "stash@{";
+static const char noColorOption[] = "--no-color";
+static const char colorOption[] = "--color=always";
+static const char patchOption[] = "--patch";
+static const char graphOption[] = "--graph";
+static const char decorateOption[] = "--decorate";
+static const char allBranchesOption[] = "--all";
+static const char followOption[] = "--follow";
 static const char gitIgnoreFile[] = ".gitignore";
 
 static const char gitGuiEncoding[] = "gui.encoding";
@@ -746,7 +743,7 @@ public:
 
         if (fileRelated) {
             QAction *followButton = addToggleButton(
-                        "--follow", Tr::tr("Follow"),
+                        followOption, Tr::tr("Follow"),
                         Tr::tr("Show log also for previous names of the file."));
             mapSetting(followButton, &settings().followRenames);
         }
@@ -1573,9 +1570,13 @@ void GitClient::log(const FilePath &workingDirectory, const QString &fileName,
         editor->setHighlightingEnabled(false);
     }
 
-    // remove "all branches" option when "log for line" is requested as they conflict
-    if (Utils::anyOf(arguments, [](const QString &arg) { return arg.startsWith("-L "); }))
+    // remove conflicting "all branches" and "follow" options when "log for line" is requested
+    const bool isLogForLine =
+        Utils::anyOf(arguments, [](const QString &arg) { return arg.startsWith("-L "); });
+    if (isLogForLine) {
         arguments.removeAll(allBranchesOption);
+        arguments.removeAll(followOption);
+    }
 
     if (!arguments.contains(graphOption) && !arguments.contains(patchOption))
         arguments << normalLogArguments();
@@ -1595,7 +1596,7 @@ void GitClient::log(const FilePath &workingDirectory, const QString &fileName,
     if (!editor->caseSensitive())
         arguments << "-i";
 
-    if (!fileName.isEmpty())
+    if (!fileName.isEmpty() && !isLogForLine)
         arguments << "--" << fileName;
 
     executeInEditor(workingDir, arguments, editor);
@@ -4405,13 +4406,14 @@ IEditor *GitClient::openShowEditor(const FilePath &workingDirectory, const QStri
     const QString relativePath = path.isRelativePath()
                                      ? path.path()
                                      : path.relativeChildPath(topLevel).path();
+    const FilePath fullPath = topLevel.pathAppended(relativePath);
 
     const QByteArray content = synchronousShow(topLevel, ref + ":" + relativePath);
     if (showSetting == ShowEditor::OnlyIfDifferent) {
         if (content.isEmpty())
             return nullptr;
         QByteArray fileContent;
-        if (TextFileFormat::readFileUtf8(path, {}, &fileContent)) {
+        if (TextFileFormat::readFileUtf8(fullPath, {}, &fileContent)) {
             if (fileContent == content)
                 return nullptr; // open the file for read/write
         }
@@ -4421,9 +4423,12 @@ IEditor *GitClient::openShowEditor(const FilePath &workingDirectory, const QStri
     QString title = Tr::tr("Git Show %1:%2").arg(ref, relativePath);
     IEditor *editor = EditorManager::openEditorWithContents(Id(), &title, content, documentId,
                                                             EditorManager::DoNotSwitchToDesignMode);
+    editor->document()->setProperty("GitReference", ref);
+    editor->document()->setProperty("GitRepository", topLevel.path());
     editor->document()->setTemporary(true);
     editor->gotoLine(line);
-    VcsBase::setSource(editor->document(), path);
+    VcsBase::setSource(editor->document(), fullPath);
+    repeatInstantBlame();
     return editor;
 }
 

@@ -19,6 +19,11 @@ class Process;
 class ProcessRunData;
 }
 
+namespace ProjectExplorer {
+class BuildConfiguration;
+class Project;
+}
+
 namespace Autotest {
 namespace Internal {
 class TestRunConfiguration;
@@ -90,12 +95,21 @@ public:
     bool isDeduced() const { return m_deducedConfiguration; }
     QString runConfigDisplayName() const { return m_deducedConfiguration ? m_deducedFrom
                                                                          : displayName(); }
+    static bool runsOnAndroid(const ProjectExplorer::Project *project);
+
+    // on Android: test is executed through the androidtestrunner tool
+    // if set, testExecutable() returns that tool and testRunnerArguments() holds
+    // its options (terminated by "--"), before the actual test arguments.
+    Utils::FilePath testExecutable() const override;
+    QStringList testRunnerArguments() const { return m_androidTestRunnerArgs; }
 
     virtual QStringList argumentsForTestRunner(QStringList *omitted = nullptr) const = 0;
 
     bool runsOnIosDevice() const;
 
 private:
+    void setupAndroidRunner(ProjectExplorer::BuildConfiguration *buildConfig);
+
     QStringList m_testCases;
     Utils::FilePath m_projectFile;
     Utils::FilePath m_buildDir;
@@ -104,6 +118,8 @@ private:
     Internal::TestRunConfiguration *m_runConfig = nullptr;
     QSet<QString> m_buildTargets;
     QPointer<ProjectExplorer::RunConfiguration> m_origRunConfig; // not owned
+    Utils::FilePath m_androidTestRunner;
+    QStringList m_androidTestRunnerArgs;
 };
 
 class DebuggableTestConfiguration : public TestConfiguration

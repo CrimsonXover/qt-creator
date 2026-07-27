@@ -9,7 +9,7 @@
 #include <utils/appinfo.h>
 #include <utils/fileutils.h>
 #include <utils/mimeutils.h>
-#include <utils/qtcassert.h>
+#include <utils/stringutils.h>
 
 #include <QCoreApplication>
 #include <QDir>
@@ -40,6 +40,12 @@ QString UtilsJsExtension::qtCreatorIdeVersion() const
 QString UtilsJsExtension::qtCreatorSettingsPath() const
 {
     return Core::ICore::userResourcePath().toUrlishString();
+}
+
+int UtilsJsExtension::versionCompare(const QString &version1, const QString &version2) const
+{
+    return QVersionNumber::compare(QVersionNumber::fromString(version1),
+                                   QVersionNumber::fromString(version2));
 }
 
 QString UtilsJsExtension::toNativeSeparators(const QString &in) const

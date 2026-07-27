@@ -3,9 +3,9 @@
 
 #include "testrunner.h"
 
-#include "autotestconstants.h"
 #include "autotestplugin.h"
 #include "autotesttr.h"
+#include "testconfiguration.h"
 #include "testoutputreader.h"
 #include "testprojectsettings.h"
 #include "testresultspane.h"
@@ -13,11 +13,12 @@
 #include "testtreeitem.h"
 #include "testtreemodel.h"
 
+#include "../android/androidconstants.h"  // soft dependency
+
 #include <coreplugin/icore.h>
 #include <coreplugin/progressmanager/taskprogress.h>
 
 #include <debugger/debuggerkitaspect.h>
-#include <debugger/debuggerruncontrol.h>
 
 #include <projectexplorer/buildconfiguration.h>
 #include <projectexplorer/buildmanager.h>
@@ -26,6 +27,7 @@
 #include <projectexplorer/devicesupport/devicekitaspects.h>
 #include <projectexplorer/devicesupport/idevice.h>
 #include <projectexplorer/project.h>
+#include <projectexplorer/projectexplorer.h>
 #include <projectexplorer/projectexplorerconstants.h>
 #include <projectexplorer/projectexplorersettings.h>
 #include <projectexplorer/projectmanager.h>
@@ -411,6 +413,8 @@ void TestRunner::runTestsHelper()
         if (config->testBase()->type() == ITestBase::Framework) {
             TestConfiguration *current = static_cast<TestConfiguration *>(config);
             QStringList omitted;
+            // on Android: androidtestrunner options (ending in "--"); empty otherwise
+            command.addArgs(current->testRunnerArguments());
             command.addArgs(current->argumentsForTestRunner(&omitted).join(' '), CommandLine::Raw);
             if (!omitted.isEmpty()) {
                 const QString &details = constructOmittedDetailsString(omitted);
@@ -823,10 +827,15 @@ void TestRunner::runOrDebugTests()
     case TestRunMode::Run:
     case TestRunMode::RunWithoutDeploy:
     case TestRunMode::RunAfterBuild: {
-        Project *project = ProjectManager::startupProject();
+        Project *project = m_selectedTests.isEmpty() ? ProjectManager::startupProject()
+                                                     : m_selectedTests.first()->project();
         const Kit *kit = project ? project->activeKit() : nullptr;
         const Id deviceTypeId = RunDeviceTypeKitAspect::deviceTypeId(kit);
-        if (kit && deviceTypeId != ProjectExplorer::Constants::DESKTOP_DEVICE_TYPE)
+        // Android runs the test through the androidtestrunner tool (resolved via the build
+        // configuration's extra data, see setupAndroidRunner()) which installs, launches and
+        // collects test output
+        const bool isAndroid = deviceTypeId == Android::Constants::ANDROID_DEVICE_TYPE;
+        if (kit && deviceTypeId != ProjectExplorer::Constants::DESKTOP_DEVICE_TYPE && !isAndroid)
             runTestsHelperViaRunControl();
         else
             runTestsHelper();

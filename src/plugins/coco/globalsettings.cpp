@@ -7,16 +7,18 @@
 #include "cocopluginconstants.h"
 #include "cocotr.h"
 
-#include <utils/fancylineedit.h>
 #include <utils/filepath.h>
 #include <utils/fileutils.h>
 #include <utils/hostosinfo.h>
+#include <utils/infolabel.h>
 #include <utils/layoutbuilder.h>
 
 #include <QProcess>
 #include <QRegularExpression>
 #include <QSettings>
 #include <QStandardPaths>
+
+#include <coreplugin/dialogs/ioptionspage.h>
 
 using namespace Utils;
 

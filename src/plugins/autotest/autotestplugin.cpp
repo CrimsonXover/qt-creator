@@ -9,6 +9,7 @@
 #include "mcptools.h"
 #include "projectsettingswidget.h"
 #include "testcodeparser.h"
+#include "testconfiguration.h"
 #include "testframeworkmanager.h"
 #include "testnavigationwidget.h"
 #include "testprojectsettings.h"
@@ -29,7 +30,6 @@
 #include <coreplugin/actionmanager/actionmanager.h>
 #include <coreplugin/coreconstants.h>
 #include <coreplugin/dialogs/ioptionspage.h>
-#include <coreplugin/icontext.h>
 #include <coreplugin/messagemanager.h>
 #include <coreplugin/progressmanager/progressmanager.h>
 
@@ -461,7 +461,8 @@ void updateMenuItemsEnabledState()
             && project && !project->needsConfiguration() && project->activeRunConfiguration()
             && !BuildManager::isBuilding();
     const bool canRunFailed = canRun && dd->m_testTreeModel.hasFailedTests();
-    const bool canDbg = canRun && dd->m_testTreeModel.hasTests(true);
+    const bool canDbg = canRun && dd->m_testTreeModel.hasTests(true)
+            && !TestConfiguration::runsOnAndroid(project);
 
     ActionManager::command(Constants::ACTION_RUN_ALL_ID)->action()->setEnabled(canRun);
     ActionManager::command(Constants::ACTION_RUN_SELECTED_ID)->action()->setEnabled(canRun);
@@ -481,8 +482,8 @@ void updateMenuItemsEnabledState()
 
     ActionManager::command(Constants::ACTION_RUN_UCURSOR)->action()->setEnabled(canRun);
     ActionManager::command(Constants::ACTION_RUN_UCURSOR_NODEPLOY)->action()->setEnabled(canRun);
-    ActionManager::command(Constants::ACTION_RUN_DBG_UCURSOR)->action()->setEnabled(canRun);
-    ActionManager::command(Constants::ACTION_RUN_DBG_UCURSOR_NODEPLOY)->action()->setEnabled(canRun);
+    ActionManager::command(Constants::ACTION_RUN_DBG_UCURSOR)->action()->setEnabled(canDbg);
+    ActionManager::command(Constants::ACTION_RUN_DBG_UCURSOR_NODEPLOY)->action()->setEnabled(canDbg);
 }
 
 void cacheRunConfigChoice(const QString &buildTargetKey, const ChoicePair &choice)
