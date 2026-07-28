@@ -6,7 +6,7 @@ on:
       source_ref:
         description: "Qt Creator branch or tag to build"
         required: true
-        default: "master"
+        default: "v20.0.0"
 
 permissions:
   contents: read
@@ -101,6 +101,7 @@ jobs:
             go
             libsecret
             elfutils
+            zlib
             qt6-main=6.11.1
             qt6-quick3d=6.11.1
             qt6-serialport=6.11.1
@@ -132,6 +133,11 @@ jobs:
               ;;
           esac
 
+          # gio-2.0 (used by libsecret) references zlib.pc. The `zlib`
+          # development package must therefore be present, not only libzlib.
+          test -f "$CONDA_PREFIX/lib/pkgconfig/zlib.pc"
+          pkg-config --modversion zlib
+          pkg-config --cflags --libs gio-2.0
           pkg-config --cflags --libs libsecret-1
 
           test -f "$CONDA_PREFIX/include/libsecret-1/libsecret/secret.h"
