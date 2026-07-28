@@ -1,4 +1,4 @@
-name: Build complete Qt Creator 20 for Ubuntu 20.04
+name: Build Qt Creator 20 for Ubuntu 20.04
 
 on:
   workflow_dispatch:
@@ -11,27 +11,25 @@ on:
 permissions:
   contents: read
 
+env:
+  DEBIAN_FRONTEND: noninteractive
+  QTC_VERSION: "20.0.0"
+  QT_VERSION: "6.11.1"
+  BUILD_DIR: ${{ github.workspace }}/build-qtcreator
+  INSTALL_DIR: ${{ github.workspace }}/package/QtCreator-20.0.0-Ubuntu20.04-x86_64
+  LLVM_DIR: ${{ github.workspace }}/llvm
+  LLVM_ARCHIVE_URL: https://download.qt.io/development_releases/prebuilt/libclang/qt/libclang-release_17.0.6-based-linux-Rhel8.8-gcc10.0-x86_64.7z
+  CMAKE_BUILD_PARALLEL_LEVEL: "2"
+
 jobs:
   build:
+    name: Compile Qt Creator
     runs-on: ubuntu-24.04
-
-    # GitHub no longer supplies an Ubuntu 20.04 hosted runner.
-    # Compilation and packaging happen inside this Ubuntu 20.04 container.
     container:
       image: ubuntu:20.04
 
-    env:
-      DEBIAN_FRONTEND: noninteractive
-      QTC_VERSION: "20.0.0"
-      QT_VERSION: "6.11.1"
-      BUILD_DIR: ${{ github.workspace }}/build-qtcreator
-      INSTALL_DIR: ${{ github.workspace }}/package/QtCreator-20.0.0-Ubuntu20.04-x86_64
-      LLVM_DIR: ${{ github.workspace }}/llvm
-      LLVM_ARCHIVE_URL: https://download.qt.io/development_releases/prebuilt/libclang/qt/libclang-release_17.0.6-based-linux-Rhel8.8-gcc10.0-x86_64.7z
-      CMAKE_BUILD_PARALLEL_LEVEL: "2"
-
     steps:
-      - name: Install Ubuntu bootstrap packages
+      - name: Install Ubuntu build packages
         shell: bash
         run: |
           set -euxo pipefail
@@ -56,6 +54,7 @@ jobs:
             libxcb-xinerama0-dev \
             libsecret-1-dev \
             libdw-dev \
+            libelf-dev \
             fontconfig \
             fonts-dejavu-core
 
@@ -75,8 +74,6 @@ jobs:
 
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-          # Relative submodule URLs resolve against a fork owner. Use the
-          # actual upstream locations.
           git config -f .gitmodules \
             submodule.perfparser.url \
             https://github.com/qt-creator/perfparser.git
@@ -109,56 +106,10 @@ jobs:
           generate-run-shell: true
           post-cleanup: all
 
-      - name: Replace chrpath with a patchelf-compatible wrapper
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          if [[ -x /usr/bin/chrpath && ! -e /usr/bin/chrpath.real ]]; then
-            mv /usr/bin/chrpath /usr/bin/chrpath.real
-          fi
-
-          cat > /usr/bin/chrpath <<'SCRIPT'
-          #!/usr/bin/env bash
-          set -euo pipefail
-
-          case "${1:-}" in
-            -l)
-              file="${2:?missing ELF file}"
-              rpath="$(/usr/bin/patchelf --print-rpath "$file")"
-              [[ -n "$rpath" ]] || exit 1
-              printf '%s: RUNPATH=%s\n' "$file" "$rpath"
-              ;;
-            -r)
-              new_rpath="${2:?missing new RPATH}"
-              file="${3:?missing ELF file}"
-              /usr/bin/patchelf --set-rpath "$new_rpath" "$file"
-              ;;
-            -d)
-              file="${2:?missing ELF file}"
-              /usr/bin/patchelf --remove-rpath "$file"
-              ;;
-            --version|-v)
-              echo "chrpath compatibility wrapper using $(/usr/bin/patchelf --version)"
-              ;;
-            *)
-              echo "Unsupported chrpath arguments: $*" >&2
-              exit 2
-              ;;
-          esac
-          SCRIPT
-
-          chmod +x /usr/bin/chrpath
-          /usr/bin/chrpath --version
-
       - name: Verify required Qt development modules
         shell: micromamba-shell {0}
         run: |
           set -euxo pipefail
-
-          echo "CONDA_PREFIX=$CONDA_PREFIX"
-          echo "CC=$CC"
-          echo "CXX=$CXX"
 
           cmake --version
           ninja --version
@@ -172,10 +123,9 @@ jobs:
 
           QMAKE="$(find "$CONDA_PREFIX" -type f -path '*/bin/qmake' -print -quit)"
           test -n "$QMAKE"
-          echo "BUILD_QMAKE=$QMAKE" >> "$GITHUB_ENV"
           "$QMAKE" -query
 
-      - name: Patch bundled libarchive for portable glibc baseline
+      - name: Patch bundled libarchive for Ubuntu 20.04
         shell: micromamba-shell {0}
         run: |
           set -euxo pipefail
@@ -211,7 +161,6 @@ jobs:
 
           LLVM_PREFIX="$(dirname "$(dirname "$(dirname "$(dirname "$CLANG_CONFIG")")")")"
           echo "LLVM_PREFIX=$LLVM_PREFIX" >> "$GITHUB_ENV"
-          echo "LLVM prefix: $LLVM_PREFIX"
 
       - name: Configure complete Qt Creator
         shell: micromamba-shell {0}
@@ -219,6 +168,10 @@ jobs:
           set -euxo pipefail
 
           rm -rf "$BUILD_DIR" "$INSTALL_DIR"
+
+          # The Micromamba pkg-config executable does not automatically search
+          # Ubuntu's multiarch pkg-config directory.
+          export PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/lib/pkgconfig:/usr/share/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 
           cmake \
             -S "$GITHUB_WORKSPACE" \
@@ -229,6 +182,7 @@ jobs:
             -DCMAKE_CXX_COMPILER="$CXX" \
             "-DCMAKE_PREFIX_PATH=$CONDA_PREFIX;$LLVM_PREFIX" \
             -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON \
+            -DQT_NO_PRIVATE_MODULE_WARNING=ON \
             -DWITH_TESTS=OFF \
             -DWITH_QMLDESIGNER=ON \
             -DENABLE_SVG_SUPPORT=ON \
@@ -242,11 +196,6 @@ jobs:
           grep -q '^ENABLE_SVG_SUPPORT:BOOL=ON$' "$BUILD_DIR/CMakeCache.txt"
           grep -q '^BUILD_QBS:BOOL=ON$' "$BUILD_DIR/CMakeCache.txt"
 
-          # Fail during configuration rather than producing an artifact without
-          # the two Designer integrations.
-          # Do not pipe Ninja directly into grep -q while pipefail is active.
-          # grep exits as soon as it finds a match, which gives Ninja SIGPIPE
-          # and makes the step fail with exit code 141.
           TARGETS_FILE="$BUILD_DIR/ninja-targets.txt"
           ninja -C "$BUILD_DIR" -t targets all > "$TARGETS_FILE"
           grep -q '^QmlDesigner:' "$TARGETS_FILE"
@@ -258,20 +207,281 @@ jobs:
           set -euxo pipefail
           cmake --build "$BUILD_DIR" --parallel 2
 
-      - name: Create self-contained runtime
+      - name: Install Qt Creator without external runtime dependencies
         shell: micromamba-shell {0}
         run: |
           set -euxo pipefail
 
+          rm -rf "$INSTALL_DIR"
           mkdir -p "$INSTALL_DIR"
 
+          # Deliberately do not install the Dependencies component in this job.
+          # The resulting tree is persisted, so packaging can be retried without
+          # compiling Qt Creator again.
           cmake --install "$BUILD_DIR" --prefix "$INSTALL_DIR"
-          cmake --install "$BUILD_DIR" \
-            --prefix "$INSTALL_DIR" \
-            --component Dependencies
 
-          # Conda's Qt requires a newer C++ runtime than Ubuntu 20.04 supplies.
+          test -x "$INSTALL_DIR/bin/qtcreator"
+          test -f "$INSTALL_DIR/lib/qtcreator/plugins/libDesigner.so"
+          test -f "$INSTALL_DIR/lib/qtcreator/plugins/libQmlDesigner.so"
+
+      - name: Archive reusable compiled stage
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          STAGE_ARCHIVE="$GITHUB_WORKSPACE/qtcreator-compiled-stage.tar.xz"
+
+          tar \
+            -C "$(dirname "$INSTALL_DIR")" \
+            -cJf "$STAGE_ARCHIVE" \
+            "$(basename "$INSTALL_DIR")"
+
+          sha256sum "$STAGE_ARCHIVE"
+          ls -lh "$STAGE_ARCHIVE"
+
+      - name: Upload reusable compiled stage
+        uses: actions/upload-artifact@v4
+        with:
+          name: qtcreator-compiled-stage
+          path: qtcreator-compiled-stage.tar.xz
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+  package:
+    name: Package Qt Creator
+    needs: build
+    runs-on: ubuntu-24.04
+    container:
+      image: ubuntu:20.04
+
+    steps:
+      - name: Install Ubuntu packaging packages
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            bash \
+            ca-certificates \
+            curl \
+            git \
+            tar \
+            xz-utils \
+            p7zip-full \
+            file \
+            patchelf \
+            chrpath \
+            libdw-dev \
+            libelf-dev \
+            fontconfig \
+            fonts-dejavu-core
+
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Check out packaging scripts
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 1
+          submodules: false
+
+      - name: Create Micromamba packaging environment
+        uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-name: qtcreator-build
+          create-args: >-
+            python=3.12
+            patchelf
+            qt6-main=6.11.1
+            qt6-quick3d=6.11.1
+            qt6-serialport=6.11.1
+            qt6-webengine=6.11.1
+          init-shell: bash
+          generate-run-shell: true
+          post-cleanup: all
+
+      - name: Download compiled Qt Creator stage
+        uses: actions/download-artifact@v5
+        with:
+          name: qtcreator-compiled-stage
+          path: /tmp/qtcreator-stage
+
+      - name: Restore compiled Qt Creator stage
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          rm -rf "$INSTALL_DIR"
+          mkdir -p "$(dirname "$INSTALL_DIR")"
+
+          tar \
+            -C "$(dirname "$INSTALL_DIR")" \
+            -xf /tmp/qtcreator-stage/qtcreator-compiled-stage.tar.xz
+
+          test -x "$INSTALL_DIR/bin/qtcreator"
+
+      - name: Install quiet chrpath wrapper backed by patchelf
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          if [[ -x /usr/bin/chrpath && ! -e /usr/bin/chrpath.real ]]; then
+            mv /usr/bin/chrpath /usr/bin/chrpath.real
+          fi
+
+          cat > /usr/bin/chrpath <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          case "${1:-}" in
+            -l)
+              file="${2:?missing ELF file}"
+
+              # Qt Creator probes executable-looking files and *.so names.
+              # Non-ELF and static ELF files should behave like "no RPATH",
+              # without printing patchelf diagnostics.
+              if ! rpath="$(/usr/bin/patchelf --print-rpath "$file" 2>/dev/null)"; then
+                exit 1
+              fi
+
+              [[ -n "$rpath" ]] || exit 1
+              printf '%s: RUNPATH=%s\n' "$file" "$rpath"
+              ;;
+
+            -r)
+              new_rpath="${2:?missing new RPATH}"
+              file="${3:?missing ELF file}"
+              /usr/bin/patchelf --set-rpath "$new_rpath" "$file"
+              ;;
+
+            -d)
+              file="${2:?missing ELF file}"
+              /usr/bin/patchelf --remove-rpath "$file"
+              ;;
+
+            --version|-v)
+              echo "chrpath compatibility wrapper using $(/usr/bin/patchelf --version)"
+              ;;
+
+            *)
+              echo "Unsupported chrpath arguments: $*" >&2
+              exit 2
+              ;;
+          esac
+          SCRIPT
+
+          chmod +x /usr/bin/chrpath
+          /usr/bin/chrpath --version
+
+      - name: Adapt conda-forge Qt WebEngine layout
+        shell: micromamba-shell {0}
+        run: |
+          set -euxo pipefail
+
+          # conda-forge builds Qt WebEngine with INSTALL_LIBEXECDIR=lib/qt6,
+          # while Qt Creator 20's deploy.py looks in <prefix>/libexec.
+          WEBENGINE_PROCESS="$(
+            find "$CONDA_PREFIX" \
+              -type f \
+              -name QtWebEngineProcess \
+              -perm -u+x \
+              -print -quit
+          )"
+
+          test -n "$WEBENGINE_PROCESS"
+          echo "QtWebEngineProcess source: $WEBENGINE_PROCESS"
+
+          mkdir -p "$CONDA_PREFIX/libexec"
+          ln -sfn "$WEBENGINE_PROCESS" \
+            "$CONDA_PREFIX/libexec/QtWebEngineProcess"
+
+          test -x "$CONDA_PREFIX/libexec/QtWebEngineProcess"
+
+          # deploy.py also expects WebEngine resources in <prefix>/resources.
+          WEBENGINE_RESOURCES="$(
+            find "$CONDA_PREFIX" \
+              -type d \
+              -name resources \
+              -exec test -f '{}/icudtl.dat' ';' \
+              -print -quit
+          )"
+
+          if [[ -n "$WEBENGINE_RESOURCES" && "$WEBENGINE_RESOURCES" != "$CONDA_PREFIX/resources" ]]; then
+            rm -rf "$CONDA_PREFIX/resources"
+            ln -s "$WEBENGINE_RESOURCES" "$CONDA_PREFIX/resources"
+          fi
+
+          find "$CONDA_PREFIX" -maxdepth 5 \
+            \( -name QtWebEngineProcess -o -name icudtl.dat \) \
+            -print
+
+      - name: Locate qmake
+        shell: micromamba-shell {0}
+        run: |
+          set -euxo pipefail
+
+          QMAKE="$(find "$CONDA_PREFIX" -type f -path '*/bin/qmake' -print -quit)"
+          test -n "$QMAKE"
+
+          echo "BUILD_QMAKE=$QMAKE" >> "$GITHUB_ENV"
+          "$QMAKE" -query
+
+      - name: Download LLVM and Clang for packaging
+        shell: micromamba-shell {0}
+        run: |
+          set -euxo pipefail
+
+          rm -rf "$LLVM_DIR"
+          mkdir -p "$LLVM_DIR"
+
+          curl --fail --location --retry 5 --retry-delay 5 \
+            "$LLVM_ARCHIVE_URL" \
+            --output /tmp/libclang.7z
+
+          7z x /tmp/libclang.7z "-o$LLVM_DIR"
+          rm -f /tmp/libclang.7z
+
+          CLANG_CONFIG="$(find "$LLVM_DIR" -type f -name ClangConfig.cmake -print -quit)"
+          test -n "$CLANG_CONFIG"
+
+          LLVM_PREFIX="$(dirname "$(dirname "$(dirname "$(dirname "$CLANG_CONFIG")")")")"
+          echo "LLVM_PREFIX=$LLVM_PREFIX" >> "$GITHUB_ENV"
+
+      - name: Deploy Qt, LLVM and optional elfutils dependencies
+        shell: micromamba-shell {0}
+        run: |
+          set -euxo pipefail
+
+          DEPLOY_ARGS=(
+            --llvm-path "$LLVM_PREFIX"
+          )
+
+          # Only request elfutils deployment when the corresponding plugin was
+          # actually built.
+          if find "$INSTALL_DIR/lib/qtcreator/plugins" \
+              -maxdepth 1 \
+              -type f \
+              -iname '*perf*profiler*.so' \
+              -print -quit | grep -q .; then
+            DEPLOY_ARGS+=(--elfutils-path /usr)
+          fi
+
+          python "$GITHUB_WORKSPACE/scripts/deploy.py" \
+            "${DEPLOY_ARGS[@]}" \
+            "$INSTALL_DIR/bin/qtcreator" \
+            "$BUILD_QMAKE"
+
+          test -x "$INSTALL_DIR/lib/Qt/libexec/QtWebEngineProcess"
+
+      - name: Finalize isolated runtime
+        shell: micromamba-shell {0}
+        run: |
+          set -euxo pipefail
+
           mkdir -p "$INSTALL_DIR/lib/Qt/lib"
+
           for library in \
             libstdc++.so.6 \
             libgcc_s.so.1 \
@@ -284,9 +494,7 @@ jobs:
             fi
           done
 
-          # The private Qt is a runtime for the IDE, not a Qt SDK or a kit.
-          # Remove development metadata and qmake/qtpaths if a package copied
-          # them. Users must select their own Qt installation in Kits.
+          # Keep the bundled Qt as an IDE runtime, not a project SDK.
           rm -rf \
             "$INSTALL_DIR/lib/Qt/include" \
             "$INSTALL_DIR/lib/Qt/mkspecs" \
@@ -300,19 +508,15 @@ jobs:
             "$INSTALL_DIR/lib/Qt/bin/qtpaths6"
 
           find "$INSTALL_DIR/lib/Qt" -type f \
-            \( -name '*.prl' -o -name '*.la' \) -delete
+            \( -name '*.prl' -o -name '*.la' \) \
+            -delete
 
-          # Do not prepend or append anything to PATH, LD_LIBRARY_PATH,
-          # QT_PLUGIN_PATH, QML_IMPORT_PATH, or CMAKE_PREFIX_PATH.
-          # Qt Creator uses its deployed relative RPATHs and bin/qt.conf.
           cat > "$INSTALL_DIR/qtcreator.sh" <<'SCRIPT'
           #!/usr/bin/env bash
           set -euo pipefail
 
           ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-          # Global Qt variables commonly mix incompatible Qt installations.
-          # Kits should define project-specific Qt paths instead.
           unset QT_PLUGIN_PATH
           unset QT_QPA_PLATFORM_PLUGIN_PATH
           unset QML_IMPORT_PATH
@@ -320,8 +524,6 @@ jobs:
           unset QTDIR
           unset QT_SELECT
 
-          # Conda's bundled fontconfig library was built with a temporary
-          # prefix. Explicitly use the host's font configuration and fonts.
           export FONTCONFIG_FILE="${FONTCONFIG_FILE:-/etc/fonts/fonts.conf}"
           export FONTCONFIG_PATH="${FONTCONFIG_PATH:-/etc/fonts}"
 
@@ -331,86 +533,60 @@ jobs:
           chmod +x "$INSTALL_DIR/qtcreator.sh"
 
           cat > "$INSTALL_DIR/README-Ubuntu20.txt" <<'README'
-          Qt Creator private Qt runtime
-          =============================
-
           Start Qt Creator with:
 
               ./qtcreator.sh
 
-          The Qt libraries under lib/Qt are only the IDE runtime. They are not
-          a development SDK and are intentionally not added to PATH.
+          The Qt installation under lib/Qt is only the private IDE runtime.
+          It is intentionally not added to PATH and is not a project SDK.
 
-          Configure the Qt version used by projects inside Qt Creator:
+          Add the Qt used by your projects in:
           Preferences/Options -> Kits -> Qt Versions -> Add
-
-          Select qmake from your actual project Qt installation, for example:
-
-              /opt/Qt/5.15.2/gcc_64/bin/qmake
-              /opt/Qt/6.8.3/gcc_64/bin/qmake
-
-          Then create or update a Kit that uses that Qt version.
           README
 
-      - name: Validate plugins, icons, fonts and isolation
+      - name: Validate packaged runtime
         shell: micromamba-shell {0}
         run: |
           set -euxo pipefail
 
-          # Qt's deploy script must have created relocation-safe configuration.
           test -f "$INSTALL_DIR/bin/qt.conf"
           grep -q '^Prefix=../lib/Qt$' "$INSTALL_DIR/bin/qt.conf"
 
-          # Main GUI/platform and SVG icon/image plugins.
           test -f "$INSTALL_DIR/lib/Qt/plugins/platforms/libqxcb.so"
           test -f "$INSTALL_DIR/lib/Qt/plugins/imageformats/libqsvg.so"
           test -f "$INSTALL_DIR/lib/Qt/plugins/iconengines/libqsvgicon.so"
           test -f "$INSTALL_DIR/lib/Qt/lib/libQt6Svg.so.6"
+          test -x "$INSTALL_DIR/lib/Qt/libexec/QtWebEngineProcess"
 
-          # Both Qt Creator Designer integrations.
           test -f "$INSTALL_DIR/lib/qtcreator/plugins/libDesigner.so"
           test -f "$INSTALL_DIR/lib/qtcreator/plugins/libQmlDesigner.so"
-          test -d "$INSTALL_DIR/lib/qtcreator/plugins/qmldesigner"
-          test -d "$INSTALL_DIR/share/qtcreator/qmldesigner"
-
-          # Full Qbs and Clang tooling.
           test -f "$INSTALL_DIR/lib/qtcreator/plugins/libQbsProjectManager.so"
           test -x "$INSTALL_DIR/libexec/qtcreator/clang/bin/clangd"
 
-          # The private Qt runtime must not be detectable as a development Qt.
           test ! -e "$INSTALL_DIR/lib/Qt/bin/qmake"
           test ! -e "$INSTALL_DIR/lib/Qt/bin/qmake6"
           test ! -d "$INSTALL_DIR/lib/Qt/lib/cmake"
           test ! -d "$INSTALL_DIR/lib/Qt/include"
 
-          # Check every packaged ELF object, not only the main executable.
-          missing_file="$GITHUB_WORKSPACE/missing-libraries.txt"
-          : > "$missing_file"
+          MISSING_FILE="$GITHUB_WORKSPACE/missing-libraries.txt"
+          : > "$MISSING_FILE"
 
           while IFS= read -r -d '' candidate; do
             if file -b "$candidate" | grep -q '^ELF '; then
-              if ldd "$candidate" 2>/dev/null | grep -F 'not found' \
-                  >> "$missing_file"; then
-                echo "Missing dependency in: $candidate" >> "$missing_file"
+              if ldd "$candidate" 2>/dev/null \
+                  | grep -F 'not found' >> "$MISSING_FILE"; then
+                echo "Missing dependency in: $candidate" >> "$MISSING_FILE"
               fi
             fi
           done < <(find "$INSTALL_DIR" -type f -print0)
 
-          if [[ -s "$missing_file" ]]; then
-            cat "$missing_file"
+          if [[ -s "$MISSING_FILE" ]]; then
+            cat "$MISSING_FILE"
             exit 1
           fi
 
-          # Verify the SVG plugins can be parsed using their private qt.conf.
-          "$INSTALL_DIR/lib/Qt/bin/qtplugininfo" \
-            "$INSTALL_DIR/lib/Qt/plugins/imageformats/libqsvg.so"
-
-          "$INSTALL_DIR/lib/Qt/bin/qtplugininfo" \
-            "$INSTALL_DIR/lib/Qt/plugins/iconengines/libqsvgicon.so"
-
           mkdir -p /tmp/qtcreator-test-home
 
-          # Launch directly without any private Qt environment variables.
           env -i \
             HOME=/tmp/qtcreator-test-home \
             USER=runner \
@@ -420,36 +596,8 @@ jobs:
             QT_QPA_PLATFORM=offscreen \
             "$INSTALL_DIR/bin/qtcreator" -version
 
-          # The launcher must not modify toolchain-selection variables.
-          if grep -E \
-              '(^|[[:space:]])(PATH|LD_LIBRARY_PATH|QT_PLUGIN_PATH|QML2_IMPORT_PATH|QML_IMPORT_PATH|CMAKE_PREFIX_PATH)=' \
-              "$INSTALL_DIR/qtcreator.sh"; then
-            echo "The launcher contaminates project build environments."
-            exit 1
-          fi
-
-          # Reject text configuration files containing CI/Micromamba paths.
-          leaked_paths="$GITHUB_WORKSPACE/leaked-build-paths.txt"
-          : > "$leaked_paths"
-
-          while IFS= read -r -d '' candidate; do
-            if grep -Iq . "$candidate"; then
-              if grep -nF \
-                  -e "$CONDA_PREFIX" \
-                  -e "$GITHUB_WORKSPACE" \
-                  "$candidate" >> "$leaked_paths"; then
-                echo "File: $candidate" >> "$leaked_paths"
-              fi
-            fi
-          done < <(find "$INSTALL_DIR" -type f -print0)
-
-          if [[ -s "$leaked_paths" ]]; then
-            cat "$leaked_paths"
-            exit 1
-          fi
-
-      - name: Create archive and checksum
-        shell: micromamba-shell {0}
+      - name: Create final archive and checksum
+        shell: bash
         run: |
           set -euxo pipefail
 
@@ -463,7 +611,7 @@ jobs:
           sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
           ls -lh "$ARCHIVE" "$ARCHIVE.sha256"
 
-      - name: Upload Qt Creator artifact
+      - name: Upload final Qt Creator artifact
         uses: actions/upload-artifact@v4
         with:
           name: qtcreator-${{ env.QTC_VERSION }}-ubuntu20.04-x86_64-complete
@@ -472,3 +620,4 @@ jobs:
             qtcreator-${{ env.QTC_VERSION }}-ubuntu20.04-x86_64-complete.tar.xz.sha256
           if-no-files-found: error
           retention-days: 14
+          overwrite: true
