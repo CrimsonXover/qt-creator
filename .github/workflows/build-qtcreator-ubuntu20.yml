@@ -6,7 +6,7 @@ on:
       source_ref:
         description: "Qt Creator branch or tag to build"
         required: true
-        default: "v20.0.0"
+        default: "master"
 
 permissions:
   contents: read
@@ -188,8 +188,17 @@ jobs:
           case "${1:-}" in
             -l)
               file="${2:?missing ELF file}"
-              rpath="$(/usr/bin/patchelf --print-rpath "$file")"
+
+              # Qt Creator's deploy helper probes executable files that are
+              # sometimes scripts, archives, or statically linked objects.
+              # Real chrpath quietly reports "no RPATH"; avoid noisy patchelf
+              # diagnostics for files that have no dynamic ELF section.
+              /usr/bin/file -Lb "$file" | grep -q '^ELF ' || exit 1
+
+              rpath="$(/usr/bin/patchelf --print-rpath "$file" 2>/dev/null)" \
+                || exit 1
               [[ -n "$rpath" ]] || exit 1
+
               printf '%s: RUNPATH=%s\n' "$file" "$rpath"
               ;;
             -r)
@@ -334,6 +343,155 @@ jobs:
           set -euxo pipefail
           cmake --build "$BUILD_DIR" --parallel 2
 
+      - name: Normalize conda Qt WebEngine deployment layout
+        shell: micromamba-shell {0}
+        run: |
+          set -euxo pipefail
+
+          QT_PREFIX="$("$BUILD_QMAKE" -query QT_INSTALL_PREFIX)"
+          QT_LIBEXECS="$("$BUILD_QMAKE" -query QT_INSTALL_LIBEXECS)"
+          QT_DATA="$("$BUILD_QMAKE" -query QT_INSTALL_DATA)"
+          QT_TRANSLATIONS="$("$BUILD_QMAKE" -query QT_INSTALL_TRANSLATIONS)"
+
+          echo "QT_PREFIX=$QT_PREFIX"
+          echo "QT_LIBEXECS=$QT_LIBEXECS"
+          echo "QT_DATA=$QT_DATA"
+          echo "QT_TRANSLATIONS=$QT_TRANSLATIONS"
+
+          test "$QT_PREFIX" = "$CONDA_PREFIX"
+
+          # Qt Creator 20's deploy.py looks specifically under
+          # QT_INSTALL_PREFIX/libexec, rather than using QT_INSTALL_LIBEXECS.
+          # conda-forge may place this binary in a Qt-specific libexec path.
+          WEBENGINE_PROCESS=""
+
+          for candidate in \
+            "$QT_LIBEXECS/QtWebEngineProcess" \
+            "$QT_PREFIX/lib/qt6/libexec/QtWebEngineProcess" \
+            "$QT_PREFIX/libexec/QtWebEngineProcess"
+          do
+            if [[ -x "$candidate" ]]; then
+              WEBENGINE_PROCESS="$candidate"
+              break
+            fi
+          done
+
+          if [[ -z "$WEBENGINE_PROCESS" ]]; then
+            WEBENGINE_PROCESS="$(
+              find -L "$QT_PREFIX" \
+                -type f \
+                -name QtWebEngineProcess \
+                -perm /111 \
+                -print \
+                -quit
+            )"
+          fi
+
+          if [[ -z "$WEBENGINE_PROCESS" || ! -x "$WEBENGINE_PROCESS" ]]; then
+            echo "qt6-webengine is installed, but QtWebEngineProcess was not found." >&2
+            find "$QT_PREFIX" -maxdepth 6 -iname '*webengine*' -print || true
+            exit 1
+          fi
+
+          echo "QtWebEngineProcess source: $WEBENGINE_PROCESS"
+
+          mkdir -p "$QT_PREFIX/libexec"
+          if [[ "$WEBENGINE_PROCESS" != "$QT_PREFIX/libexec/QtWebEngineProcess" ]]; then
+            ln -sfn "$WEBENGINE_PROCESS" \
+              "$QT_PREFIX/libexec/QtWebEngineProcess"
+          fi
+          test -x "$QT_PREFIX/libexec/QtWebEngineProcess"
+
+          # deploy.py also assumes WebEngine resources are directly below
+          # QT_INSTALL_PREFIX/resources. Populate that compatibility directory
+          # from conda-forge's actual Qt data layout.
+          mkdir -p "$QT_PREFIX/resources"
+
+          resources=(
+            icudtl.dat
+            qtwebengine_resources.pak
+            qtwebengine_resources_100p.pak
+            qtwebengine_resources_200p.pak
+            qtwebengine_devtools_resources.pak
+            v8_context_snapshot.bin
+          )
+
+          for resource in "${resources[@]}"; do
+            destination="$QT_PREFIX/resources/$resource"
+
+            if [[ -e "$destination" ]]; then
+              continue
+            fi
+
+            source_file=""
+
+            for candidate in \
+              "$QT_DATA/resources/$resource" \
+              "$QT_PREFIX/share/qt6/resources/$resource" \
+              "$QT_PREFIX/lib/qt6/resources/$resource"
+            do
+              if [[ -f "$candidate" ]]; then
+                source_file="$candidate"
+                break
+              fi
+            done
+
+            if [[ -z "$source_file" ]]; then
+              source_file="$(
+                find -L "$QT_PREFIX" \
+                  -type f \
+                  -name "$resource" \
+                  -print \
+                  -quit
+              )"
+            fi
+
+            if [[ -n "$source_file" ]]; then
+              echo "$source_file -> $destination"
+              ln -sfn "$source_file" "$destination"
+            fi
+          done
+
+          # The core resource files are mandatory for the help viewer.
+          test -f "$QT_PREFIX/resources/qtwebengine_resources.pak"
+          test -f "$QT_PREFIX/resources/qtwebengine_resources_100p.pak"
+          test -f "$QT_PREFIX/resources/qtwebengine_resources_200p.pak"
+
+          # Qt Creator's deploy script does not copy qtwebengine_locales.
+          # Save the actual source directory for the packaging step.
+          WEBENGINE_LOCALES=""
+
+          for candidate in \
+            "$QT_TRANSLATIONS/qtwebengine_locales" \
+            "$QT_PREFIX/share/qt6/translations/qtwebengine_locales" \
+            "$QT_PREFIX/translations/qtwebengine_locales"
+          do
+            if [[ -d "$candidate" ]]; then
+              WEBENGINE_LOCALES="$candidate"
+              break
+            fi
+          done
+
+          if [[ -z "$WEBENGINE_LOCALES" ]]; then
+            WEBENGINE_LOCALES="$(
+              find -L "$QT_PREFIX" \
+                -type d \
+                -name qtwebengine_locales \
+                -print \
+                -quit
+            )"
+          fi
+
+          if [[ -z "$WEBENGINE_LOCALES" || ! -d "$WEBENGINE_LOCALES" ]]; then
+            echo "Qt WebEngine locale data was not found." >&2
+            exit 1
+          fi
+
+          test -n "$(find "$WEBENGINE_LOCALES" -maxdepth 1 -type f -name '*.pak' -print -quit)"
+
+          echo "QTWEBENGINE_LOCALES_SOURCE=$WEBENGINE_LOCALES" \
+            >> "$GITHUB_ENV"
+
       - name: Create self-contained runtime
         shell: micromamba-shell {0}
         run: |
@@ -345,6 +503,32 @@ jobs:
           cmake --install "$BUILD_DIR" \
             --prefix "$INSTALL_DIR" \
             --component Dependencies
+
+          # deploy.py copies WebEngineProcess and resource files, but Qt
+          # Creator 20 does not copy the WebEngine locale .pak directory.
+          mkdir -p "$INSTALL_DIR/lib/Qt/translations"
+          rm -rf \
+            "$INSTALL_DIR/lib/Qt/translations/qtwebengine_locales"
+          cp -a \
+            "$QTWEBENGINE_LOCALES_SOURCE" \
+            "$INSTALL_DIR/lib/Qt/translations/qtwebengine_locales"
+
+          # Make all private-runtime locations explicit. These are relative to
+          # Prefix and do not expose the CI or Micromamba paths.
+          for qt_conf in \
+            "$INSTALL_DIR/bin/qt.conf" \
+            "$INSTALL_DIR/lib/Qt/bin/qt.conf" \
+            "$INSTALL_DIR/libexec/qtcreator/qt.conf"
+          do
+            test -f "$qt_conf"
+
+            grep -q '^LibraryExecutables=' "$qt_conf" \
+              || echo 'LibraryExecutables=libexec' >> "$qt_conf"
+            grep -q '^Data=' "$qt_conf" \
+              || echo 'Data=.' >> "$qt_conf"
+            grep -q '^Translations=' "$qt_conf" \
+              || echo 'Translations=translations' >> "$qt_conf"
+          done
 
           # Conda's Qt requires a newer C++ runtime than Ubuntu 20.04 supplies.
           mkdir -p "$INSTALL_DIR/lib/Qt/lib"
@@ -442,6 +626,22 @@ jobs:
           test -f "$INSTALL_DIR/lib/Qt/plugins/imageformats/libqsvg.so"
           test -f "$INSTALL_DIR/lib/Qt/plugins/iconengines/libqsvgicon.so"
           test -f "$INSTALL_DIR/lib/Qt/lib/libQt6Svg.so.6"
+
+          # Complete Qt WebEngine runtime used by the Help plugin.
+          test -x "$INSTALL_DIR/lib/Qt/libexec/QtWebEngineProcess"
+          test -f "$INSTALL_DIR/lib/Qt/resources/qtwebengine_resources.pak"
+          test -f "$INSTALL_DIR/lib/Qt/resources/qtwebengine_resources_100p.pak"
+          test -f "$INSTALL_DIR/lib/Qt/resources/qtwebengine_resources_200p.pak"
+          test -d "$INSTALL_DIR/lib/Qt/translations/qtwebengine_locales"
+          test -n "$(
+            find \
+              "$INSTALL_DIR/lib/Qt/translations/qtwebengine_locales" \
+              -maxdepth 1 \
+              -type f \
+              -name '*.pak' \
+              -print \
+              -quit
+          )"
 
           # Both Qt Creator Designer integrations.
           test -f "$INSTALL_DIR/lib/qtcreator/plugins/libDesigner.so"
