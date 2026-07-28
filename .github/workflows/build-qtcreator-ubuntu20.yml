@@ -7,11 +7,6 @@ on:
         description: "Qt Creator branch or tag to build"
         required: true
         default: "v20.0.0"
-  push:
-    branches:
-      - main
-      - master
-      - "20.0"
 
 permissions:
   contents: read
@@ -69,7 +64,7 @@ jobs:
       - name: Check out Qt Creator source
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.ref_name }}
+          ref: ${{ inputs.source_ref }}
           fetch-depth: 0
           submodules: false
 
@@ -249,8 +244,13 @@ jobs:
 
           # Fail during configuration rather than producing an artifact without
           # the two Designer integrations.
-          ninja -C "$BUILD_DIR" -t targets all | grep -q '^QmlDesigner:'
-          ninja -C "$BUILD_DIR" -t targets all | grep -q '^Designer:'
+          # Do not pipe Ninja directly into grep -q while pipefail is active.
+          # grep exits as soon as it finds a match, which gives Ninja SIGPIPE
+          # and makes the step fail with exit code 141.
+          TARGETS_FILE="$BUILD_DIR/ninja-targets.txt"
+          ninja -C "$BUILD_DIR" -t targets all > "$TARGETS_FILE"
+          grep -q '^QmlDesigner:' "$TARGETS_FILE"
+          grep -q '^Designer:' "$TARGETS_FILE"
 
       - name: Build Qt Creator
         shell: micromamba-shell {0}
