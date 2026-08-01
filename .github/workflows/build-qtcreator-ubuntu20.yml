@@ -103,6 +103,7 @@ jobs:
             glib
             elfutils
             zlib
+            clang-tools=17.0.6
             qt6-main=6.11.1
             qt6-quick3d=6.11.1
             qt6-serialport=6.11.1
@@ -284,6 +285,11 @@ jobs:
           LLVM_PREFIX="$(dirname "$(dirname "$(dirname "$(dirname "$CLANG_CONFIG")")")")"
           echo "LLVM_PREFIX=$LLVM_PREFIX" >> "$GITHUB_ENV"
           echo "LLVM prefix: $LLVM_PREFIX"
+
+          echo "Executables supplied by the Qt LLVM archive:"
+          if [[ -d "$LLVM_PREFIX/bin" ]]; then
+            find "$LLVM_PREFIX/bin" -maxdepth 1 -type f -o -type l | sort
+          fi
 
       - name: Configure complete Qt Creator
         shell: micromamba-shell {0}
@@ -504,6 +510,165 @@ jobs:
             --prefix "$INSTALL_DIR" \
             --component Dependencies
 
+          # Qt Creator's deploy.py copies clangd only when it exists in the
+          # Qt prebuilt LLVM archive. Some archive variants contain the LLVM
+          # libraries required to build Qt Creator but omit one or more tools.
+          #
+          # Keep the Qt LLVM package for building the plugins. For missing
+          # runtime tools only, use conda-forge's matching LLVM 17.0.6 tools
+          # and bundle every conda library they require privately.
+          CLANG_RUNTIME="$INSTALL_DIR/libexec/qtcreator/clang"
+          mkdir -p "$CLANG_RUNTIME/bin" "$CLANG_RUNTIME/lib"
+
+          for tool in clangd clang-tidy clang-format
+          do
+            destination="$CLANG_RUNTIME/bin/$tool"
+
+            if [[ -x "$destination" ]]; then
+              echo "$tool was deployed from the Qt LLVM archive."
+              continue
+            fi
+
+            source_tool="$CONDA_PREFIX/bin/$tool"
+            if [[ ! -x "$source_tool" ]]; then
+              echo "Required fallback tool not found: $source_tool" >&2
+              exit 1
+            fi
+
+            echo "Deploying conda-forge fallback: $source_tool -> $destination"
+            cp -L "$source_tool" "$destination"
+            chmod +x "$destination"
+          done
+
+          # Recursively copy only libraries resolved from CONDA_PREFIX.
+          # System glibc libraries remain system dependencies, while LLVM,
+          # libxml2, zlib and compiler runtimes stay private to clangd.
+          export CLANG_RUNTIME CONDA_PREFIX
+          python - <<'PY'
+          import os
+          import pathlib
+          import re
+          import shutil
+          import subprocess
+
+          prefix = pathlib.Path(os.environ["CONDA_PREFIX"]).resolve()
+          runtime = pathlib.Path(os.environ["CLANG_RUNTIME"]).resolve()
+          bindir = runtime / "bin"
+          libdir = runtime / "lib"
+          libdir.mkdir(parents=True, exist_ok=True)
+
+          queue = [
+              bindir / "clangd",
+              bindir / "clang-tidy",
+              bindir / "clang-format",
+          ]
+          visited: set[pathlib.Path] = set()
+          copied: dict[str, pathlib.Path] = {}
+
+          def resolved_dependencies(binary: pathlib.Path) -> list[pathlib.Path]:
+              result = subprocess.run(
+                  ["ldd", str(binary)],
+                  check=True,
+                  text=True,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.STDOUT,
+              )
+
+              dependencies: list[pathlib.Path] = []
+              for line in result.stdout.splitlines():
+                  line = line.strip()
+
+                  match = re.search(r"=>\s+(/[^\s]+)\s+\(", line)
+                  if match:
+                      dependencies.append(pathlib.Path(match.group(1)))
+                      continue
+
+                  match = re.match(r"(/[^\s]+)\s+\(", line)
+                  if match:
+                      dependencies.append(pathlib.Path(match.group(1)))
+
+              return dependencies
+
+          while queue:
+              binary = queue.pop()
+              try:
+                  real_binary = binary.resolve(strict=True)
+              except FileNotFoundError:
+                  raise SystemExit(f"Missing dependency input: {binary}")
+
+              if real_binary in visited:
+                  continue
+              visited.add(real_binary)
+
+              for dependency in resolved_dependencies(real_binary):
+                  try:
+                      real_dependency = dependency.resolve(strict=True)
+                  except FileNotFoundError:
+                      raise SystemExit(
+                          f"Unresolved dependency for {binary}: {dependency}"
+                      )
+
+                  try:
+                      real_dependency.relative_to(prefix)
+                  except ValueError:
+                      # Keep Ubuntu/glibc system libraries as system dependencies.
+                      continue
+
+                  destination_name = dependency.name
+                  destination = libdir / destination_name
+
+                  previous = copied.get(destination_name)
+                  if previous is not None and previous != real_dependency:
+                      raise SystemExit(
+                          "Conflicting bundled library basename "
+                          f"{destination_name}: {previous} and {real_dependency}"
+                      )
+
+                  copied[destination_name] = real_dependency
+
+                  if not destination.exists():
+                      print(f"{dependency} -> {destination}")
+                      shutil.copy2(real_dependency, destination)
+
+                  queue.append(real_dependency)
+
+          if not copied:
+              raise SystemExit(
+                  "No conda runtime libraries were detected for the Clang tools."
+              )
+          PY
+
+          # Preserve a fully relocatable private runtime. Nothing is added to
+          # PATH or LD_LIBRARY_PATH.
+          for executable in \
+            "$CLANG_RUNTIME/bin/clangd" \
+            "$CLANG_RUNTIME/bin/clang-tidy" \
+            "$CLANG_RUNTIME/bin/clang-format"
+          do
+            if patchelf --print-needed "$executable" >/dev/null 2>&1; then
+              patchelf --set-rpath \
+                '$ORIGIN/../lib:$ORIGIN/../../../../lib/Qt/lib' \
+                "$executable"
+            fi
+          done
+
+          while IFS= read -r -d '' library
+          do
+            if patchelf --print-needed "$library" >/dev/null 2>&1; then
+              patchelf --set-rpath \
+                '$ORIGIN:$ORIGIN/../../../../lib/Qt/lib' \
+                "$library"
+            fi
+          done < <(find "$CLANG_RUNTIME/lib" -type f -print0)
+
+          test -x "$CLANG_RUNTIME/bin/clangd"
+          test -d "$CLANG_RUNTIME/lib/clang"
+
+          env -i \
+            HOME=/tmp \
+            PATH=/usr/bin:/bin \
+            "$CLANG_RUNTIME/bin/clangd" --version
+
           # deploy.py copies WebEngineProcess and resource files, but Qt
           # Creator 20 does not copy the WebEngine locale .pak directory.
           mkdir -p "$INSTALL_DIR/lib/Qt/translations"
@@ -652,6 +817,12 @@ jobs:
           # Full Qbs and Clang tooling.
           test -f "$INSTALL_DIR/lib/qtcreator/plugins/libQbsProjectManager.so"
           test -x "$INSTALL_DIR/libexec/qtcreator/clang/bin/clangd"
+          test -d "$INSTALL_DIR/libexec/qtcreator/clang/lib/clang"
+
+          env -i \
+            HOME=/tmp \
+            PATH=/usr/bin:/bin \
+            "$INSTALL_DIR/libexec/qtcreator/clang/bin/clangd" --version
 
           # The private Qt runtime must not be detectable as a development Qt.
           test ! -e "$INSTALL_DIR/lib/Qt/bin/qmake"
